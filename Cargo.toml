@@ -1,6 +1,6 @@
 [package]
 name = "deterix"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Deterministic network emulator with microsecond timing precision"
 license = "GPL-3.0"

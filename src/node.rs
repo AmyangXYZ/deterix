@@ -288,7 +288,7 @@ impl Node {
         }
     }
 
-    /// Send a data packet without waiting for reply
+    /// Send a data packet
     pub fn send(&mut self, dst: u32, data: &[u8]) {
         let packet = PacketBuilder::new_data(&self.pool, self.id, dst, data).unwrap();
         self.enqueue_tx_packet(

@@ -143,9 +143,9 @@ impl<'a> PacketBuilder<'a> {
 
     fn write_data_payload(&mut self, data: &[u8]) {
         let payload = self.buffer.as_mut_slice();
-        payload[36] = data.len() as u8;
-        payload[37..37 + data.len()].copy_from_slice(data);
-        self.buffer.set_size(37 + data.len());
+        payload[36..38].copy_from_slice(&(data.len() as u16).to_be_bytes());
+        payload[38..38 + data.len()].copy_from_slice(data);
+        self.buffer.set_size(38 + data.len());
     }
 
     pub fn new_ack(
@@ -250,16 +250,11 @@ pub struct DataView<'a> {
 }
 
 impl<'a> DataView<'a> {
-    pub fn name(&self) -> &str {
-        std::str::from_utf8(&self.payload[0..128])
-            .expect("Invalid UTF-8 sequence")
-            .trim_end_matches('\0')
-    }
-    pub fn size(&self) -> usize {
-        self.payload[128] as usize
+    pub fn size(&self) -> u16 {
+        u16::from_be_bytes(self.payload[0..2].try_into().unwrap())
     }
     pub fn data(&self) -> &[u8] {
-        &self.payload[129..129 + self.size()]
+        &self.payload[2..2 + self.size() as usize]
     }
 }
 
