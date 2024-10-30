@@ -3,6 +3,7 @@ use crate::packet::*;
 use crate::schedule::*;
 use core_affinity;
 use std::collections::vec_deque::VecDeque;
+use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
@@ -22,8 +23,9 @@ static RT_SCHEDULER_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 pub struct Node {
     pub id: u32,
-    pub pool: Arc<PacketBufferPool>,
     pub schedule: Arc<Schedule>,
+    pub routing_table: HashMap<u32, SocketAddr>,
+    pool: Arc<PacketBufferPool>,
     socket: UdpSocket,
     tx_queue: Arc<Mutex<VecDeque<(PacketBuffer<'static>, SocketAddr)>>>,
     rx_queue: Arc<Mutex<VecDeque<(PacketBuffer<'static>, SocketAddr)>>>,
@@ -37,8 +39,9 @@ impl Node {
 
         let mut node = Self {
             id,
-            pool: Arc::new(PacketBufferPool::new()),
+            routing_table: HashMap::new(),
             schedule: Arc::new(Schedule::new()),
+            pool: Arc::new(PacketBufferPool::new()),
             socket: UdpSocket::bind(address).unwrap(),
             tx_queue: Arc::new(Mutex::new(VecDeque::new())),
             rx_queue: Arc::new(Mutex::new(VecDeque::new())),
@@ -52,7 +55,7 @@ impl Node {
     // core logic, send/receive packets following a TDMA schedule
     fn run(&mut self) {
         println!(
-            "*** New RT-NDS node [{}] running on {} ***",
+            "*** New DETERIX node [node_{}] running on {} ***",
             self.id,
             self.socket.local_addr().unwrap()
         );
@@ -93,9 +96,11 @@ impl Node {
 
             while let Ok(slot_number) = slot_ticker.recv() {
                 let slot = schedule.slots[slot_number as usize % SLOTFRAME_SIZE as usize];
+
                 if verbose {
-                    println!("[Node {}] Slot-{:?} {:?}", id, slot_number, slot);
+                    println!("[Node {}] *Slot {}* {:?}", id, slot_number, slot);
                 }
+
                 if slot.sender == id {
                     let Some((packet_buffer, addr)) = tx_queue.lock().unwrap().pop_front() else {
                         continue;
@@ -105,7 +110,10 @@ impl Node {
                     let ptype = packet_view.ptype();
                     let uid = packet_view.uid();
                     if verbose {
-                        println!("[Node {}] Sent {:?} to {}", id, ptype, slot.receiver);
+                        println!(
+                            "[Node {}] *Slot {}* Sent {:?} to {}",
+                            id, slot_number, ptype, slot.receiver
+                        );
                     }
                     // wait for ack
                     if let Some(mut ack_buffer) = pool.take() {
@@ -120,15 +128,21 @@ impl Node {
                                 if let PayloadView::Ack(ack) = packet_view.payload() {
                                     if ack.uid() == uid {
                                         if verbose {
-                                            println!("[Node {}] Ack received", id);
+                                            println!(
+                                                "[Node {}] *Slot {}* Ack received",
+                                                id, slot_number
+                                            );
                                         }
                                     }
                                 }
                             }
                         } else {
                             if verbose {
-                                println!("[Node {}] Ack timeout", id);
-                                println!("[Node {}] Resent {:?} to {}", id, ptype, slot.receiver);
+                                println!("[Node {}] *Slot {}* Ack timeout", id, slot_number);
+                                println!(
+                                    "[Node {}] *Slot {}* Resent {:?} to {}",
+                                    id, slot_number, ptype, slot.receiver
+                                );
                             }
                             // resend the packet immediately at the next slot
                             tx_queue
@@ -145,7 +159,12 @@ impl Node {
 
                             if packet_view.magic() == MAGIC && packet_view.dst() == id {
                                 if verbose {
-                                    println!("[Node {}] Received {:?}", id, packet_view.ptype());
+                                    println!(
+                                        "[Node {}] *Slot {}* Received {:?}",
+                                        id,
+                                        slot_number,
+                                        packet_view.ptype()
+                                    );
                                 }
 
                                 if let Some(ack) =
@@ -153,7 +172,10 @@ impl Node {
                                 {
                                     let _ = socket.send_to(ack.as_bytes(), src);
                                     if verbose {
-                                        println!("[Node {}] Responded ack", id);
+                                        println!(
+                                            "[Node {}] *Slot {}* Responded ack",
+                                            id, slot_number
+                                        );
                                     }
                                 }
 
@@ -173,7 +195,7 @@ impl Node {
         {
             core_affinity::set_for_current(core_id);
         } else {
-            eprintln!("[Server] Failed to set core affinity for packet queue");
+            eprintln!("! Failed to set core affinity for packet queue");
         }
     }
 
@@ -183,12 +205,12 @@ impl Node {
             if contents.trim() == "1" {
                 RT_SCHEDULER_AVAILABLE.store(true, Ordering::Relaxed);
                 if verbose {
-                    println!("[Server] PREEMPT-RT patch available, set thread priorities");
+                    println!("! PREEMPT-RT patch available, set thread priorities");
                 }
             }
         } else {
             if verbose {
-                println!("[Server] PREEMPT-RT patch not available, no priority boosting");
+                println!("! PREEMPT-RT patch not available, no priority boosting");
             }
         }
     }
@@ -203,7 +225,7 @@ impl Node {
             {
                 core_affinity::set_for_current(core_id);
             } else {
-                eprintln!("[Node {}] Failed to set core affinity for slot ticker", id);
+                eprintln!("! Failed to set core affinity for slot ticker");
             }
 
             #[cfg(target_os = "linux")]
@@ -218,7 +240,10 @@ impl Node {
                         &sched_param,
                     ) != 0
                     {
-                        eprintln!("Failed to set SCHED_RR. Error: {}", Error::last_os_error());
+                        eprintln!(
+                            "! Failed to set SCHED_RR. Error: {}",
+                            Error::last_os_error()
+                        );
                         return;
                     }
                 }
@@ -249,47 +274,29 @@ impl Node {
     }
 
     /// Receive a single packet and call the callback with the packet
-    pub fn recv_once(&mut self, callback: PacketCallback) {
+    pub fn recv(&mut self, timeout: Duration) -> Option<PacketView<'static>> {
+        let start_time = Instant::now();
         loop {
             if let Some((buffer, _addr)) = self.dequeue_rx_packet() {
                 let packet = PacketView::new(buffer);
-                callback(packet);
-                break;
+                return Some(packet);
             }
-            thread::sleep(Duration::from_millis(1));
-        }
-    }
-
-    /// Receive packets and call the callback with each packet
-    pub fn recv(&mut self, callback: PacketCallback) {
-        loop {
-            self.recv_once(callback);
-            thread::sleep(Duration::from_millis(1));
-        }
-    }
-
-    /// Send a packet without waiting for reply
-    pub fn send(&mut self, packet: PacketBuffer<'static>, addr: SocketAddr) {
-        self.enqueue_tx_packet(packet, addr);
-    }
-
-    /// Send a packet and wait for reply
-    pub fn send_await(
-        &mut self,
-        packet: PacketBuffer<'static>,
-        addr: SocketAddr,
-        callback: PacketCallback,
-    ) {
-        self.enqueue_tx_packet(packet, addr);
-        loop {
-            if let Some((packet, _addr)) = self.dequeue_rx_packet() {
-                let packet_view = PacketView::new(packet);
-                if packet_view.magic() == MAGIC && packet_view.dst() == self.id {
-                    callback(packet_view);
-                    break;
-                }
+            if start_time.elapsed() > timeout {
+                return None;
             }
-            thread::sleep(Duration::from_millis(1));
+            // thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    /// Send a data packet without waiting for reply
+    pub fn send(&mut self, dst: u32, data: &[u8]) {
+        let packet = PacketBuilder::new_data(&self.pool, self.id, dst, data).unwrap();
+        self.enqueue_tx_packet(
+            packet,
+            self.routing_table
+                .get(&dst)
+                .expect("Destination not in routing table")
+                .clone(),
+        );
     }
 }

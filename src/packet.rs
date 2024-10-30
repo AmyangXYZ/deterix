@@ -4,12 +4,15 @@ use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub type PacketCallback = fn(PacketView);
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PacketType {
     Ack,
-    Status,
+    TimeSync,
+    JoinReq,
+    JoinResp,
+    Routing,
+    Schedule,
+    Statistics,
     Data,
 }
 
@@ -17,8 +20,13 @@ impl From<u8> for PacketType {
     fn from(value: u8) -> Self {
         match value {
             0 => PacketType::Ack,
-            1 => PacketType::Status,
-            2 => PacketType::Data,
+            1 => PacketType::TimeSync,
+            2 => PacketType::JoinReq,
+            3 => PacketType::JoinResp,
+            4 => PacketType::Routing,
+            5 => PacketType::Schedule,
+            6 => PacketType::Statistics,
+            7 => PacketType::Data,
             _ => panic!("Invalid PacketType value"),
         }
     }
@@ -26,7 +34,12 @@ impl From<u8> for PacketType {
 
 pub enum PayloadView<'a> {
     Ack(AckView<'a>),
-    Status(StatusView<'a>),
+    TimeSync(TimeSyncView<'a>),
+    JoinReq(JoinReqView<'a>),
+    JoinResp(JoinRespView<'a>),
+    Routing(RoutingView<'a>),
+    Schedule(ScheduleView<'a>),
+    Statistics(StatisticsView<'a>),
     Data(DataView<'a>),
 }
 
@@ -67,7 +80,22 @@ impl<'a> PacketView<'a> {
             PacketType::Ack => PayloadView::Ack(AckView {
                 payload: self.payload_slice(),
             }),
-            PacketType::Status => PayloadView::Status(StatusView {
+            PacketType::TimeSync => PayloadView::TimeSync(TimeSyncView {
+                payload: self.payload_slice(),
+            }),
+            PacketType::JoinReq => PayloadView::JoinReq(JoinReqView {
+                payload: self.payload_slice(),
+            }),
+            PacketType::JoinResp => PayloadView::JoinResp(JoinRespView {
+                payload: self.payload_slice(),
+            }),
+            PacketType::Routing => PayloadView::Routing(RoutingView {
+                payload: self.payload_slice(),
+            }),
+            PacketType::Schedule => PayloadView::Schedule(ScheduleView {
+                payload: self.payload_slice(),
+            }),
+            PacketType::Statistics => PayloadView::Statistics(StatisticsView {
                 payload: self.payload_slice(),
             }),
             PacketType::Data => PayloadView::Data(DataView {
@@ -113,18 +141,11 @@ impl<'a> PacketBuilder<'a> {
         self.buffer.set_size(44);
     }
 
-    fn write_status_payload(&mut self, code: StatusCode, message: &str) {
-        self.buffer.as_mut_slice()[36] = code as u8;
-        self.buffer.as_mut_slice()[37..37 + message.len()].copy_from_slice(message.as_bytes());
-        self.buffer.set_size(37 + message.len());
-    }
-
-    fn write_data_payload(&mut self, name: &str, data: &[u8]) {
+    fn write_data_payload(&mut self, data: &[u8]) {
         let payload = self.buffer.as_mut_slice();
-        payload[36..36 + name.len()].copy_from_slice(name.as_bytes());
-        payload[164] = data.len() as u8;
-        payload[165..165 + data.len()].copy_from_slice(data);
-        self.buffer.set_size(165 + data.len());
+        payload[36] = data.len() as u8;
+        payload[37..37 + data.len()].copy_from_slice(data);
+        self.buffer.set_size(37 + data.len());
     }
 
     pub fn new_ack(
@@ -140,31 +161,16 @@ impl<'a> PacketBuilder<'a> {
         Some(packet_builder.buffer)
     }
 
-    pub fn new_status(
-        pool: &PacketBufferPool,
-        src: u32,
-        dst: u32,
-        code: StatusCode,
-        message: &str,
-    ) -> Option<PacketBuffer<'a>> {
-        let buffer = pool.take()?;
-        let mut packet_builder = Self::new(buffer);
-        packet_builder.write_header(PacketType::Status, src, dst, 0);
-        packet_builder.write_status_payload(code, message);
-        Some(packet_builder.buffer)
-    }
-
     pub fn new_data(
         pool: &PacketBufferPool,
         src: u32,
         dst: u32,
-        name: &str,
         data: &[u8],
     ) -> Option<PacketBuffer<'a>> {
         let buffer = pool.take()?;
         let mut packet_builder = Self::new(buffer);
         packet_builder.write_header(PacketType::Data, src, dst, 0);
-        packet_builder.write_data_payload(name, data);
+        packet_builder.write_data_payload(data);
         Some(packet_builder.buffer)
     }
 }
@@ -179,35 +185,63 @@ impl<'a> AckView<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum StatusCode {
-    Success,
-    ChecksumMismatch,
-}
-
-impl From<u8> for StatusCode {
-    fn from(value: u8) -> Self {
-        match value {
-            0 => StatusCode::Success,
-            1 => StatusCode::ChecksumMismatch,
-            _ => panic!("Invalid StatusCode value"),
-        }
-    }
-}
-
-pub struct StatusView<'a> {
+pub struct TimeSyncView<'a> {
     payload: &'a [u8],
 }
 
-impl<'a> StatusView<'a> {
-    pub fn code(&self) -> StatusCode {
-        StatusCode::from(self.payload[0])
+impl<'a> TimeSyncView<'a> {
+    pub fn time(&self) -> u64 {
+        u64::from_be_bytes(self.payload[0..8].try_into().unwrap())
     }
+}
 
-    pub fn message(&self) -> &str {
-        std::str::from_utf8(&self.payload[1..129])
-            .unwrap()
-            .trim_end_matches('\0')
+pub struct JoinReqView<'a> {
+    payload: &'a [u8],
+}
+
+impl<'a> JoinReqView<'a> {
+    pub fn id(&self) -> u32 {
+        u32::from_be_bytes(self.payload[0..4].try_into().unwrap())
+    }
+}
+
+pub struct JoinRespView<'a> {
+    payload: &'a [u8],
+}
+
+impl<'a> JoinRespView<'a> {
+    pub fn permitted(&self) -> u8 {
+        self.payload[0]
+    }
+}
+
+pub struct RoutingView<'a> {
+    payload: &'a [u8],
+}
+
+impl<'a> RoutingView<'a> {
+    pub fn entry(&self) -> u32 {
+        u32::from_be_bytes(self.payload[0..4].try_into().unwrap())
+    }
+}
+
+pub struct ScheduleView<'a> {
+    payload: &'a [u8],
+}
+
+impl<'a> ScheduleView<'a> {
+    pub fn entry(&self) -> u32 {
+        u32::from_be_bytes(self.payload[0..4].try_into().unwrap())
+    }
+}
+
+pub struct StatisticsView<'a> {
+    payload: &'a [u8],
+}
+
+impl<'a> StatisticsView<'a> {
+    pub fn entry(&self) -> u32 {
+        u32::from_be_bytes(self.payload[0..4].try_into().unwrap())
     }
 }
 
@@ -228,6 +262,8 @@ impl<'a> DataView<'a> {
         &self.payload[129..129 + self.size()]
     }
 }
+
+// Packet buffer pool implementation
 
 pub struct Buffer {
     data: UnsafeCell<[u8; PACKET_SIZE]>,
