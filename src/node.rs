@@ -97,14 +97,16 @@ impl Node {
             while let Ok(slot_number) = slot_ticker.recv() {
                 let slot = schedule.slots[slot_number as usize % SLOTFRAME_SIZE as usize];
 
-                if verbose {
-                    println!("[Node {}] *Slot {}* {:?}", id, slot_number, slot);
-                }
+                // if verbose {
+                //     println!("[Node {}] *Slot {}* {:?}", id, slot_number, slot);
+                // }
 
                 if slot.sender == id {
-                    let Some((packet_buffer, addr)) = tx_queue.lock().unwrap().pop_front() else {
+                    let Some((mut packet_buffer, addr)) = tx_queue.lock().unwrap().pop_front()
+                    else {
                         continue;
                     };
+                    packet_buffer.set_slot_number(slot_number);
                     let _ = socket.send_to(packet_buffer.as_bytes(), addr);
 
                     let packet_view = PacketView::new(packet_buffer);
@@ -113,26 +115,31 @@ impl Node {
                     if verbose {
                         println!(
                             "[Node {}] *Slot {}* Sent {:?} to {}",
-                            id, slot_number, ptype, slot.receiver
+                            id,
+                            packet_view.slot_number(),
+                            ptype,
+                            slot.receiver
                         );
                     }
 
                     // wait for ack
                     if let Some(mut ack_buffer) = pool.take() {
                         if let Ok((_, _)) = socket.recv_from(&mut ack_buffer.as_mut_slice()) {
-                            let packet_view = PacketView::new(ack_buffer);
+                            let ack_view = PacketView::new(ack_buffer);
 
-                            if packet_view.magic() == MAGIC
-                                && packet_view.ptype() == PacketType::Ack
-                                && packet_view.dst() == id
-                                && packet_view.src() == slot.receiver
+                            if ack_view.magic() == MAGIC
+                                && ack_view.ptype() == PacketType::Ack
+                                && ack_view.dst() == id
+                                && ack_view.src() == slot.receiver
+                                && ack_view.slot_number() == slot_number
                             {
-                                if let PayloadView::Ack(ack) = packet_view.payload() {
+                                if let PayloadView::Ack(ack) = ack_view.payload() {
                                     if ack.uid() == uid {
                                         if verbose {
                                             println!(
                                                 "[Node {}] *Slot {}* Ack received",
-                                                id, slot_number
+                                                id,
+                                                ack_view.slot_number()
                                             );
                                         }
                                     }
@@ -159,7 +166,11 @@ impl Node {
                             let packet_view = PacketView::new(packet_buffer);
                             let uid = packet_view.uid();
 
-                            if packet_view.magic() == MAGIC && packet_view.dst() == id {
+                            if packet_view.magic() == MAGIC
+                                && packet_view.dst() == id
+                                && packet_view.ptype() != PacketType::Ack
+                                && packet_view.slot_number() == slot_number
+                            {
                                 if verbose {
                                     println!(
                                         "[Node {}] *Slot {}* Received {:?}",
@@ -169,9 +180,10 @@ impl Node {
                                     );
                                 }
 
-                                if let Some(ack) =
+                                if let Some(mut ack) =
                                     PacketBuilder::new_ack(&pool, slot.receiver, slot.sender, uid)
                                 {
+                                    ack.set_slot_number(slot_number);
                                     let _ = socket.send_to(ack.as_bytes(), src);
                                     if verbose {
                                         println!(
@@ -256,7 +268,7 @@ impl Node {
                 let now = Instant::now();
                 if now >= last_tick + Duration::from_micros(SLOT_DURATION) {
                     slot_ticker_sender
-                        .send(absolute_slot_number)
+                        .send(absolute_slot_number % SLOTFRAME_SIZE as u64)
                         .expect("Failed to send tick");
                     last_tick = now;
                     absolute_slot_number += 1;
@@ -287,7 +299,7 @@ impl Node {
         None
     }
 
-    /// Send a data packet
+    /// Send (enqueue) a data packet
     pub fn send(&mut self, dst: u32, data: &[u8]) {
         let packet = PacketBuilder::new_data(&self.pool, self.id, dst, data).unwrap();
         self.enqueue_tx_packet(

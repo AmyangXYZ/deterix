@@ -69,9 +69,9 @@ impl<'a> PacketView<'a> {
     // pub fn priority(&self) -> u8 {
     //     self.buffer.as_slice()[19]
     // }
-    // pub fn token(&self) -> u64 {
-    //     u64::from_be_bytes(self.buffer.as_slice()[20..28].try_into().unwrap())
-    // }
+    pub fn slot_number(&self) -> u64 {
+        u64::from_be_bytes(self.buffer.as_slice()[20..28].try_into().unwrap())
+    }
     // pub fn timestamp(&self) -> u64 {
     //     u64::from_be_bytes(self.buffer.as_slice()[28..36].try_into().unwrap())
     // }
@@ -126,7 +126,7 @@ impl<'a> PacketBuilder<'a> {
         header[11..15].copy_from_slice(&src.to_be_bytes());
         header[15..19].copy_from_slice(&dst.to_be_bytes());
         header[19] = priority;
-        header[20..28].copy_from_slice(&TOKEN.to_be_bytes());
+        // header[20..28] is reserved for slot number, set when sending
         header[28..36].copy_from_slice(
             &(SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -324,6 +324,10 @@ impl<'a> PacketBuffer<'a> {
 
     pub fn set_size(&mut self, size: usize) {
         self.size = size;
+    }
+
+    pub fn set_slot_number(&mut self, slot_number: u64) {
+        self.as_mut_slice()[20..28].copy_from_slice(&slot_number.to_be_bytes());
     }
 }
 

@@ -13,3 +13,7 @@ crc32fast = "1.4.2"
 libc = "0.2"
 core_affinity = "0.8.1"
 rand = "0.8.5" 
+
+[[bin]]
+name = "example"
+path = "src/example/main.rs"
