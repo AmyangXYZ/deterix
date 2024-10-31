@@ -8,7 +8,7 @@ fn main() {
         node.routing_table
             .insert(2, "127.0.0.1:7777".parse().unwrap());
         let packet = node
-            .recv(Duration::from_secs(1))
+            .recv(Duration::from_secs(3))
             .expect("No packet received");
         if let PayloadView::Data(data) = packet.payload() {
             println!(
@@ -26,7 +26,7 @@ fn main() {
             .insert(1, "127.0.0.1:7778".parse().unwrap());
         let b = [1].repeat(1024);
         node.send(1, &b);
-        println!("Sent data ({:?} bytes) to node 1", b.len());
+        println!("Enqueued {:?} bytes data sending to node 1", b.len());
     });
 
     node1.join().expect("Node 1 panicked");

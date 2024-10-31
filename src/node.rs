@@ -106,6 +106,7 @@ impl Node {
                         continue;
                     };
                     let _ = socket.send_to(packet_buffer.as_bytes(), addr);
+
                     let packet_view = PacketView::new(packet_buffer);
                     let ptype = packet_view.ptype();
                     let uid = packet_view.uid();
@@ -115,6 +116,7 @@ impl Node {
                             id, slot_number, ptype, slot.receiver
                         );
                     }
+
                     // wait for ack
                     if let Some(mut ack_buffer) = pool.take() {
                         if let Ok((_, _)) = socket.recv_from(&mut ack_buffer.as_mut_slice()) {
@@ -273,19 +275,16 @@ impl Node {
         self.rx_queue.lock().unwrap().pop_front()
     }
 
-    /// Receive a single packet and call the callback with the packet
+    /// Receive a single packet
     pub fn recv(&mut self, timeout: Duration) -> Option<PacketView<'static>> {
-        let start_time = Instant::now();
-        loop {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
             if let Some((buffer, _addr)) = self.dequeue_rx_packet() {
-                let packet = PacketView::new(buffer);
-                return Some(packet);
+                return Some(PacketView::new(buffer));
             }
-            if start_time.elapsed() > timeout {
-                return None;
-            }
-            // thread::sleep(Duration::from_millis(1));
+            thread::sleep(Duration::from_micros(100));
         }
+        None
     }
 
     /// Send a data packet
