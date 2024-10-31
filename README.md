@@ -26,7 +26,7 @@ The network operates on a Time Division Multiple Access (TDMA) protocol with Nod
 | 0    | 1    | 2    | 3    | 4    |  |
 +------+------+------+------+------+--+
 
-|<------ Single Slot Structure ------->|
+|<------ Single Slot Structure ------>|
 +-----------+------------+------------+
 | Packet TX | ACK Window | Guard Band |
 +-----------+------------+------------+

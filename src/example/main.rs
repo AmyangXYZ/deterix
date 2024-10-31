@@ -1,35 +1,34 @@
-use deterix::Node;
-use deterix::PayloadView;
+use deterix::{Node, PayloadView};
 use std::thread;
 use std::time::Duration;
 
 fn main() {
-    let node1 = thread::spawn(move || {
-        let mut node = Node::new(1, "localhost:7778", true);
-        node.routing_table
-            .insert(2, "127.0.0.1:7777".parse().unwrap());
-        let packet = node
-            .recv(Duration::from_secs(3))
-            .expect("No packet received");
+    let orchestrator = thread::spawn(move || {
+        let mut orchestrator = Node::new(0, "localhost:7778", true);
+        orchestrator
+            .routing_table
+            .insert(1, "127.0.0.1:7777".parse().unwrap());
+        orchestrator.respond_join_req(1);
+        println!("Waiting for data");
+        let packet = orchestrator.recv(Duration::from_secs(10)).unwrap();
+
         if let PayloadView::Data(data) = packet.payload() {
-            println!(
-                "Received packet: {:?} ({:?} bytes) from node {}",
-                packet.ptype(),
-                data.size(),
-                packet.src()
-            );
+            println!("Data received: {:?}", data.data());
         }
     });
 
-    let node2 = thread::spawn(move || {
-        let mut node = Node::new(2, "localhost:7777", true);
+    let node1 = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(500));
+        let mut node = Node::new(1, "localhost:7777", true);
         node.routing_table
-            .insert(1, "127.0.0.1:7778".parse().unwrap());
-        let b = [1, 0].repeat(512);
-        node.send(1, &b);
-        println!("Enqueued {:?} bytes data sending to node 1", b.len());
+            .insert(0, "127.0.0.1:7778".parse().unwrap());
+
+        node.join();
+        println!("Node 1 joined");
+        node.send(0, "Hello".as_bytes());
+        println!("Sending data");
     });
 
+    orchestrator.join().expect("Orchestrator panicked");
     node1.join().expect("Node 1 panicked");
-    node2.join().expect("Node 2 panicked");
 }

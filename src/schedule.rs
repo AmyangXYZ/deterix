@@ -22,8 +22,12 @@ impl Schedule {
             slots: [
                 Slot::new(1, 2),
                 Slot::new(2, 1),
-                Slot::new(1, 2),
-                Slot::new(2, 1),
+                Slot::new(1, 3),
+                Slot::new(1, 3),
+                Slot::new(ANY_NODE, ORCHESTRATOR_ID),
+                Slot::new(ORCHESTRATOR_ID, ANY_NODE),
+                Slot::new(ANY_NODE, ORCHESTRATOR_ID),
+                Slot::new(ORCHESTRATOR_ID, ANY_NODE),
             ],
         }
     }

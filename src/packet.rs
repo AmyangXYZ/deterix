@@ -141,6 +141,21 @@ impl<'a> PacketBuilder<'a> {
         self.buffer.set_size(44);
     }
 
+    fn write_join_req_payload(&mut self, id: u32) {
+        self.buffer.as_mut_slice()[36..40].copy_from_slice(&id.to_be_bytes());
+        self.buffer.set_size(40);
+    }
+
+    fn write_join_resp_payload(&mut self, permitted: u8, reference_clock: u64) {
+        self.buffer.as_mut_slice()[36] = permitted;
+        if permitted == 1 {
+            self.buffer.as_mut_slice()[37..45].copy_from_slice(&reference_clock.to_be_bytes());
+            self.buffer.set_size(45);
+        } else {
+            self.buffer.set_size(37);
+        }
+    }
+
     fn write_data_payload(&mut self, data: &[u8]) {
         let payload = self.buffer.as_mut_slice();
         payload[36..38].copy_from_slice(&(data.len() as u16).to_be_bytes());
@@ -158,6 +173,33 @@ impl<'a> PacketBuilder<'a> {
         let mut packet_builder = Self::new(buffer);
         packet_builder.write_header(PacketType::Ack, src, dst, 0);
         packet_builder.write_ack_payload(uid);
+        Some(packet_builder.buffer)
+    }
+
+    pub fn new_join_req(
+        pool: &PacketBufferPool,
+        src: u32,
+        dst: u32,
+        id: u32,
+    ) -> Option<PacketBuffer<'a>> {
+        let buffer = pool.take()?;
+        let mut packet_builder = Self::new(buffer);
+        packet_builder.write_header(PacketType::JoinReq, src, dst, 0);
+        packet_builder.write_join_req_payload(id);
+        Some(packet_builder.buffer)
+    }
+
+    pub fn new_join_resp(
+        pool: &PacketBufferPool,
+        src: u32,
+        dst: u32,
+        permitted: u8,
+        reference_clock: u64,
+    ) -> Option<PacketBuffer<'a>> {
+        let buffer = pool.take()?;
+        let mut packet_builder = Self::new(buffer);
+        packet_builder.write_header(PacketType::JoinResp, src, dst, 0);
+        packet_builder.write_join_resp_payload(permitted, reference_clock);
         Some(packet_builder.buffer)
     }
 
@@ -190,7 +232,7 @@ pub struct TimeSyncView<'a> {
 }
 
 impl<'a> TimeSyncView<'a> {
-    pub fn time(&self) -> u64 {
+    pub fn reference_clock(&self) -> u64 {
         u64::from_be_bytes(self.payload[0..8].try_into().unwrap())
     }
 }
@@ -212,6 +254,9 @@ pub struct JoinRespView<'a> {
 impl<'a> JoinRespView<'a> {
     pub fn permitted(&self) -> u8 {
         self.payload[0]
+    }
+    pub fn reference_clock(&self) -> u64 {
+        u64::from_be_bytes(self.payload[1..9].try_into().unwrap())
     }
 }
 
