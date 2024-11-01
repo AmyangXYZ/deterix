@@ -3,12 +3,12 @@ use std::thread;
 use std::time::Duration;
 fn main() {
     let orchestrator = thread::spawn(move || {
-        let mut orchestrator = Node::new_orchestrator("127.0.0.1:7778", false);
+        let mut orchestrator = Node::new_orchestrator("127.0.0.1:7778", true);
         orchestrator.serve();
     });
 
     let node1 = thread::spawn(move || {
-        let mut node = Node::new(1, "127.0.0.1:7777", false);
+        let mut node = Node::new(1, "127.0.0.1:7777", true);
         node.join("127.0.0.1:7778");
         println!("[Node 1] Joined");
         if let Some((packet, _)) = node.recv(Duration::from_secs(5)) {
@@ -21,7 +21,7 @@ fn main() {
     });
 
     let node2 = thread::spawn(move || {
-        let mut node = Node::new(2, "127.0.0.2:7777", false);
+        let mut node = Node::new(2, "127.0.0.2:7777", true);
         node.join("127.0.0.1:7778");
         println!("[Node 2] Joined");
         node.routing_table

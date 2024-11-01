@@ -350,7 +350,7 @@ impl Node {
                     slot_ticker_sender
                         .send((now - reference_time) / SLOT_DURATION)
                         .expect("Failed to send tick");
-                    // thread::sleep(Duration::from_micros(SLOT_DURATION * 4 / 5));
+                    thread::sleep(Duration::from_micros(SLOT_DURATION * 4 / 5));
                 }
             }
         });
@@ -406,6 +406,9 @@ impl Node {
             orchestrator_address.parse().expect("Invalid address"),
         );
 
+        if self.verbose {
+            println!("[Node {}] Sending join request", self.id);
+        }
         loop {
             let join_req =
                 PacketBuilder::new_join_req(&self.pool, self.id, ORCHESTRATOR_ID, self.id).unwrap();
@@ -420,10 +423,6 @@ impl Node {
                         .clone(),
                 )
                 .expect("Failed to send join request");
-
-            if self.verbose {
-                println!("Sent join request to {}", ORCHESTRATOR_ID);
-            }
 
             let _ = self
                 .socket

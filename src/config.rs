@@ -4,7 +4,7 @@ pub const PACKET_SIZE: usize = HEADER_SIZE + DATA_SIZE + 2; // 2 bytes for data 
 
 pub const MAGIC: u16 = 0xCAFE;
 
-pub const SLOT_DURATION: u64 = 50_000; // in microseconds
+pub const SLOT_DURATION: u64 = 500; // in microseconds
 pub const CLEAR_WINDOW: u64 = SLOT_DURATION / 10; // in microseconds
 pub const TX_WINDOW: u64 = SLOT_DURATION / 2; // in microseconds
 pub const ACK_WINDOW: u64 = SLOT_DURATION * 3 / 10; // in microseconds
