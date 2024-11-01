@@ -19,17 +19,21 @@ The network operates on a Time Division Multiple Access (TDMA) protocol with Nod
 - Dynamic network formation and management
 
 ### Slot Structure
-```
-|<------- SLOTFRAME (N slots) ------->|
-+------+------+------+------+------+--+
-| Slot | Slot | Slot | Slot | Slot |..|
-| 0    | 1    | 2    | 3    | 4    |  |
-+------+------+------+------+------+--+
 
-|<------ Single Slot Structure ------>|
-+-----------+------------+------------+
-| Packet TX | ACK Window | Guard Band |
-+-----------+------------+------------+
+```
+|<------------------------ SLOTFRAME (8 slots) ------------------------>|
++--------+--------+--------+--------+--------+--------+--------+--------+
+| Slot 0 | Slot 1 | Slot 2 | Slot 3 | Slot 4 | Slot 5 | Slot 6 | Slot 7 |
+| IDLE   | DEDIC  | DEDIC  | DEDIC  | SHARED | SHARED | SHARED | SHARED |
+| -/-    | 1/2    | 2/3    | 3/1    | */0    | */0    | 0/*    | */0    |
++--------+--------+--------+--------+--------+--------+--------+--------+
+
+
+|<----------------------------- Single Slot ----------------------------->|
++-------+-----------------------------------+---------------------+-------+
+| CLEAR |               TX/RX               |         ACK         | GUARD |
+|  10%  |                50%                |         30%         |  10%  |
++-------+-----------------------------------+---------------------+-------+
 ```
 
 ### Time Synchronization
@@ -56,9 +60,9 @@ The network operates on a Time Division Multiple Access (TDMA) protocol with Nod
    New Node                  Node 0 (Orchestrator)
       |                              |
       |------ Join Request --------->| (in shared slot)
-      |                              | - Records node
+      |                              | - Records node and add schedule
       |                              | - Prepares timing info
-      |<----- Join Response ---------)
+      |<----- Join Response ---------|
       |                              |
       |- Synchronize local clock     |
       |- Start normal operation      |
@@ -87,3 +91,8 @@ The network operates on a Time Division Multiple Access (TDMA) protocol with Nod
   - RT scheduler prioritization
   - Efficient buffer management
   - Microsecond-precision timing
+
+
+## LICENSE
+
+GPL-3.0

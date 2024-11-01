@@ -69,10 +69,6 @@ impl Node {
 
         let socket = self.socket.try_clone().expect("Failed to clone socket");
 
-        let _ = socket
-            .set_read_timeout(Some(std::time::Duration::from_micros(ACK_TIMEOUT)))
-            .expect("Failed to set read timeout");
-
         let pool = Arc::clone(&self.pool);
         let schedule = Arc::clone(&self.schedule);
         let tx_queue = Arc::clone(&self.tx_queue);
@@ -104,121 +100,150 @@ impl Node {
             while let Ok(slot_number) = slot_ticker.recv() {
                 let slot =
                     schedule.lock().unwrap().slots[slot_number as usize % SLOTFRAME_SIZE as usize];
+                let slot_start_time = Instant::now();
+
+                let clear_end_time = slot_start_time + Duration::from_micros(CLEAR_WINDOW);
+                let tx_end_time = clear_end_time + Duration::from_micros(TX_WINDOW);
+                let ack_end_time = tx_end_time + Duration::from_micros(ACK_WINDOW);
+                let slot_end_time = ack_end_time + Duration::from_micros(GUARD_BAND);
 
                 // if verbose {
                 //     println!("[Node {}] *Slot {}*", id, slot_number);
                 // }
 
-                if slot.sender == id || (!joined.load(Ordering::Relaxed) && slot.sender == ANY_NODE)
+                // CLEAR WINDOW: clear packet in socket buffer from previous slots
                 {
-                    let Some((packet_buffer, addr)) = tx_queue.lock().unwrap().pop_front() else {
-                        continue;
-                    };
-                    let mut packet_view = PacketView::new(packet_buffer);
-                    if packet_view.src() == id
-                        && (slot.receiver == packet_view.dst() || (slot.receiver == ANY_NODE))
+                    let _ =
+                        socket.set_read_timeout(Some(Duration::from_micros(CLEAR_WINDOW * 4 / 5)));
+                    if let Some(mut temp_packet_buffer) = pool.take() {
+                        let _ = socket.recv_from(&mut temp_packet_buffer.as_mut_slice());
+                    }
+                    let _ = socket.set_read_timeout(Some(Duration::from_micros(ACK_WINDOW)));
+                    Self::sleep_until(clear_end_time);
+                }
+
+                // TX/RX and ACK WINDOW: transmit/receive a packet and wait/send ack
+                {
+                    if slot.sender == id
+                        || (!joined.load(Ordering::Relaxed) && slot.sender == ANY_NODE)
                     {
-                    } else {
-                        tx_queue
-                            .lock()
-                            .unwrap()
-                            .push_front((packet_view.buffer, addr));
-                        continue;
-                    }
-
-                    packet_view.buffer.set_slot_number(slot_number);
-                    let _ = socket.send_to(packet_view.buffer.as_bytes(), addr);
-
-                    let ptype = packet_view.ptype();
-                    let uid = packet_view.uid();
-                    let dst = packet_view.dst();
-                    if verbose {
-                        println!(
-                            "[Node {}] *Slot {}* Sent {:?} to {}",
-                            id,
-                            packet_view.slot_number(),
-                            ptype,
-                            dst
-                        );
-                    }
-
-                    // wait for ack
-                    if let Some(mut ack_buffer) = pool.take() {
-                        if let Ok((_, _)) = socket.recv_from(&mut ack_buffer.as_mut_slice()) {
-                            let ack_view = PacketView::new(ack_buffer);
-
-                            if ack_view.magic() == MAGIC
-                                && ack_view.ptype() == PacketType::Ack
-                                && ack_view.dst() == id
-                                && ack_view.src() == packet_view.dst()
-                                && ack_view.slot_number() == slot_number
-                            {
-                                if let PayloadView::Ack(ack) = ack_view.payload() {
-                                    if ack.uid() == uid {
-                                        if verbose {
-                                            println!(
-                                                "[Node {}] *Slot {}* Ack received",
-                                                id,
-                                                ack_view.slot_number()
-                                            );
-                                        }
-                                    }
-                                }
-                            }
+                        let Some((packet_buffer, addr)) = tx_queue.lock().unwrap().pop_front()
+                        else {
+                            continue;
+                        };
+                        let packet_view = PacketView::new(packet_buffer);
+                        if packet_view.src() == id
+                            && (slot.receiver == packet_view.dst() || (slot.receiver == ANY_NODE))
+                        {
                         } else {
-                            if verbose {
-                                println!("[Node {}] Ack timeout", id);
-                                println!("[Node {}] Resent {:?} to {}", id, ptype, dst);
-                            }
-                            // resend the packet immediately at the next slot
                             tx_queue
                                 .lock()
                                 .unwrap()
                                 .push_front((packet_view.buffer, addr));
+                            continue;
                         }
-                    }
-                } else if slot.receiver == id
-                    || (!joined.load(Ordering::Relaxed) && slot.receiver == ANY_NODE)
-                {
-                    if let Some(mut packet_buffer) = pool.take() {
-                        if let Ok((_, src)) = socket.recv_from(&mut packet_buffer.as_mut_slice()) {
-                            let packet_view = PacketView::new(packet_buffer);
-                            let uid = packet_view.uid();
 
-                            if packet_view.magic() == MAGIC
-                                && packet_view.dst() == id
-                                && (packet_view.src() == slot.sender || slot.sender == ANY_NODE)
-                                && packet_view.ptype() != PacketType::Ack
-                                && packet_view.slot_number() == slot_number
-                            {
-                                if verbose {
-                                    println!(
-                                        "[Node {}] *Slot {}* Received {:?}",
-                                        id,
-                                        slot_number,
-                                        packet_view.ptype()
-                                    );
-                                }
+                        let _ = socket.send_to(packet_view.buffer.as_bytes(), addr);
 
-                                if let Some(mut ack) =
-                                    PacketBuilder::new_ack(&pool, slot.receiver, slot.sender, uid)
+                        let ptype = packet_view.ptype();
+                        let uid = packet_view.uid();
+                        let dst = packet_view.dst();
+                        if verbose {
+                            println!(
+                                "[Node {}] *Slot {}* Sent {:?} to {}",
+                                id, slot_number, ptype, dst
+                            );
+                        }
+
+                        Self::sleep_until(tx_end_time);
+
+                        // wait for ack
+                        if let Some(mut ack_buffer) = pool.take() {
+                            if let Ok((_, _)) = socket.recv_from(&mut ack_buffer.as_mut_slice()) {
+                                let ack_view = PacketView::new(ack_buffer);
+
+                                if ack_view.magic() == MAGIC
+                                    && ack_view.ptype() == PacketType::Ack
+                                    && ack_view.dst() == id
+                                    && ack_view.src() == packet_view.dst()
                                 {
-                                    ack.set_slot_number(slot_number);
-                                    let _ = socket.send_to(ack.as_bytes(), src);
+                                    if let PayloadView::Ack(ack) = ack_view.payload() {
+                                        if ack.uid() == uid {
+                                            if verbose {
+                                                println!(
+                                                    "[Node {}] *Slot {}* Ack received",
+                                                    id, slot_number
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                if verbose {
+                                    println!("[Node {}] Ack timeout", id);
+                                    println!("[Node {}] Resent {:?} to {}", id, ptype, dst);
+                                }
+                                // resend the packet immediately at the next slot
+                                tx_queue
+                                    .lock()
+                                    .unwrap()
+                                    .push_front((packet_view.buffer, addr));
+                            }
+
+                            Self::sleep_until(ack_end_time);
+                        }
+                    } else if slot.receiver == id
+                        || (!joined.load(Ordering::Relaxed) && slot.receiver == ANY_NODE)
+                    {
+                        if let Some(mut packet_buffer) = pool.take() {
+                            if let Ok((_, src)) =
+                                socket.recv_from(&mut packet_buffer.as_mut_slice())
+                            {
+                                let packet_view = PacketView::new(packet_buffer);
+                                let uid = packet_view.uid();
+
+                                if packet_view.magic() == MAGIC
+                                    && packet_view.dst() == id
+                                    && (packet_view.src() == slot.sender || slot.sender == ANY_NODE)
+                                    && packet_view.ptype() != PacketType::Ack
+                                {
                                     if verbose {
+                                        println!(
+                                            "[Node {}] *Slot {}* Received {:?}",
+                                            id,
+                                            slot_number,
+                                            packet_view.ptype()
+                                        );
                                         println!(
                                             "[Node {}] *Slot {}* Responded ack",
                                             id, slot_number
                                         );
                                     }
+
                                     rx_queue
                                         .lock()
                                         .unwrap()
                                         .push_back((packet_view.buffer, src));
+
+                                    if let Some(ack) = PacketBuilder::new_ack(
+                                        &pool,
+                                        slot.receiver,
+                                        slot.sender,
+                                        uid,
+                                    ) {
+                                        Self::sleep_until(tx_end_time);
+                                        let _ = socket.send_to(ack.as_bytes(), src);
+                                        Self::sleep_until(ack_end_time);
+                                    }
                                 }
                             }
                         }
                     }
+                }
+
+                // GUARD BAND: wait for guard band
+                {
+                    Self::sleep_until(slot_end_time);
                 }
             }
         });
@@ -320,6 +345,12 @@ impl Node {
         });
 
         slot_ticker_receiver
+    }
+
+    fn sleep_until(deadline: Instant) {
+        while Instant::now() < deadline {
+            thread::sleep(Duration::from_micros(1));
+        }
     }
 
     fn enqueue_tx_packet(&mut self, packet: PacketBuffer<'static>, addr: SocketAddr) {

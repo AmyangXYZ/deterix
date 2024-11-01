@@ -70,7 +70,7 @@ impl<'a> PacketView<'a> {
     // pub fn priority(&self) -> u8 {
     //     self.buffer.as_slice()[19]
     // }
-    pub fn slot_number(&self) -> u64 {
+    pub fn token(&self) -> u64 {
         u64::from_be_bytes(self.buffer.as_slice()[20..28].try_into().unwrap())
     }
     // pub fn timestamp(&self) -> u64 {
@@ -400,10 +400,6 @@ impl<'a> PacketBuffer<'a> {
 
     pub fn set_size(&mut self, size: usize) {
         self.size = size;
-    }
-
-    pub fn set_slot_number(&mut self, slot_number: u64) {
-        self.as_mut_slice()[20..28].copy_from_slice(&slot_number.to_be_bytes());
     }
 }
 
