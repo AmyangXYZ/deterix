@@ -1,4 +1,5 @@
 use crate::config::*;
+use crate::schedule::*;
 use rand::Rng;
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -146,11 +147,25 @@ impl<'a> PacketBuilder<'a> {
         self.buffer.set_size(40);
     }
 
-    fn write_join_resp_payload(&mut self, permitted: u8, reference_clock: u64) {
-        self.buffer.as_mut_slice()[36] = permitted;
+    fn write_join_resp_payload(
+        &mut self,
+        permitted: u8,
+        reference_clock: u64,
+        schedule: &Schedule,
+    ) {
+        let payload = self.buffer.as_mut_slice();
+
+        payload[36] = permitted;
         if permitted == 1 {
-            self.buffer.as_mut_slice()[37..45].copy_from_slice(&reference_clock.to_be_bytes());
-            self.buffer.set_size(45);
+            payload[37..45].copy_from_slice(&reference_clock.to_be_bytes());
+            for (i, slot) in schedule.slots.iter().enumerate() {
+                let offset = 45 + i * 13; // Base offset for each slot
+                payload[offset] = slot.slot_type as u8;
+                payload[offset + 1..offset + 5].copy_from_slice(&slot.slot_number.to_be_bytes());
+                payload[offset + 5..offset + 9].copy_from_slice(&slot.sender.to_be_bytes());
+                payload[offset + 9..offset + 13].copy_from_slice(&slot.receiver.to_be_bytes());
+            }
+            self.buffer.set_size(45 + SLOTFRAME_SIZE * 13);
         } else {
             self.buffer.set_size(37);
         }
@@ -195,11 +210,12 @@ impl<'a> PacketBuilder<'a> {
         dst: u32,
         permitted: u8,
         reference_clock: u64,
+        schedule: &Schedule,
     ) -> Option<PacketBuffer<'a>> {
         let buffer = pool.take()?;
         let mut packet_builder = Self::new(buffer);
         packet_builder.write_header(PacketType::JoinResp, src, dst, 0);
-        packet_builder.write_join_resp_payload(permitted, reference_clock);
+        packet_builder.write_join_resp_payload(permitted, reference_clock, schedule);
         Some(packet_builder.buffer)
     }
 
@@ -257,6 +273,21 @@ impl<'a> JoinRespView<'a> {
     }
     pub fn reference_clock(&self) -> u64 {
         u64::from_be_bytes(self.payload[1..9].try_into().unwrap())
+    }
+    pub fn schedule(&self) -> Schedule {
+        let payload = self.payload;
+        let slots = payload[9..9 + 13 * SLOTFRAME_SIZE]
+            .chunks(13)
+            .map(|chunk| Slot {
+                slot_type: SlotType::from(chunk[0]),
+                slot_number: u32::from_be_bytes(chunk[1..5].try_into().unwrap()),
+                sender: u32::from_be_bytes(chunk[5..9].try_into().unwrap()),
+                receiver: u32::from_be_bytes(chunk[9..13].try_into().unwrap()),
+            })
+            .collect::<Vec<_>>();
+        Schedule {
+            slots: slots.try_into().unwrap(),
+        }
     }
 }
 

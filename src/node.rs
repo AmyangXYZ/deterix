@@ -24,7 +24,7 @@ static RT_SCHEDULER_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 pub struct Node {
     pub id: u32,
-    pub schedule: Arc<Schedule>,
+    pub schedule: Arc<Mutex<Schedule>>,
     pub routing_table: HashMap<u32, SocketAddr>,
     is_orchestrator: bool,
     joined: Arc<AtomicBool>,
@@ -47,7 +47,7 @@ impl Node {
             joined: Arc::new(AtomicBool::new(id == ORCHESTRATOR_ID)),
             reference_clock: Arc::new(AtomicU64::new(0)),
             routing_table: HashMap::new(),
-            schedule: Arc::new(Schedule::new()),
+            schedule: Arc::new(Mutex::new(Schedule::new())),
             pool: Arc::new(PacketBufferPool::new()),
             socket: UdpSocket::bind(address).unwrap(),
             tx_queue: Arc::new(Mutex::new(VecDeque::new())),
@@ -102,11 +102,12 @@ impl Node {
             }
 
             while let Ok(slot_number) = slot_ticker.recv() {
-                let slot = schedule.slots[slot_number as usize % SLOTFRAME_SIZE as usize];
+                let slot =
+                    schedule.lock().unwrap().slots[slot_number as usize % SLOTFRAME_SIZE as usize];
 
-                if verbose {
-                    println!("[Node {}] *Slot {}*", id, slot_number);
-                }
+                // if verbose {
+                //     println!("[Node {}] *Slot {}*", id, slot_number);
+                // }
 
                 if slot.sender == id || (!joined.load(Ordering::Relaxed) && slot.sender == ANY_NODE)
                 {
@@ -130,13 +131,14 @@ impl Node {
 
                     let ptype = packet_view.ptype();
                     let uid = packet_view.uid();
+                    let dst = packet_view.dst();
                     if verbose {
                         println!(
                             "[Node {}] *Slot {}* Sent {:?} to {}",
                             id,
                             packet_view.slot_number(),
                             ptype,
-                            slot.receiver
+                            dst
                         );
                     }
 
@@ -166,7 +168,7 @@ impl Node {
                         } else {
                             if verbose {
                                 println!("[Node {}] Ack timeout", id);
-                                println!("[Node {}] Resent {:?} to {}", id, ptype, slot.receiver);
+                                println!("[Node {}] Resent {:?} to {}", id, ptype, dst);
                             }
                             // resend the packet immediately at the next slot
                             tx_queue
@@ -209,12 +211,11 @@ impl Node {
                                             id, slot_number
                                         );
                                     }
+                                    rx_queue
+                                        .lock()
+                                        .unwrap()
+                                        .push_back((packet_view.buffer, src));
                                 }
-
-                                rx_queue
-                                    .lock()
-                                    .unwrap()
-                                    .push_back((packet_view.buffer, src));
                             }
                         }
                     }
@@ -376,10 +377,12 @@ impl Node {
                 self.reference_clock
                     .store(join_resp.reference_clock(), Ordering::Relaxed);
                 println!(
-                    "Join response received from {}, reference clock set to {}",
+                    "Join response received from {}, reference clock set to {}, slots: {:?}",
                     packet.src(),
-                    join_resp.reference_clock()
+                    join_resp.reference_clock(),
+                    join_resp.schedule().slots
                 );
+                *self.schedule.lock().unwrap() = join_resp.schedule();
             }
         }
     }
@@ -390,12 +393,17 @@ impl Node {
             .expect("No join response received");
 
         if let PayloadView::JoinReq(join_req) = packet.payload() {
+            {
+                let mut schedule = self.schedule.lock().unwrap();
+                schedule.slots[2] = Slot::new_dedicate(self.id, packet.src(), ORCHESTRATOR_ID);
+            }
             let join_resp = PacketBuilder::new_join_resp(
                 &self.pool,
                 self.id,
                 packet.src(),
                 permitted,
                 self.reference_clock.load(Ordering::Relaxed),
+                &self.schedule.lock().unwrap(),
             )
             .unwrap();
             self.enqueue_tx_packet(
