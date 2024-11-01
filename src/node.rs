@@ -158,6 +158,7 @@ impl Node {
                         Self::sleep_until(tx_end_time);
 
                         // wait for ack
+                        let _ = socket.set_read_timeout(Some(Duration::from_micros(ACK_WINDOW)));
                         if let Some(mut ack_buffer) = pool.take() {
                             if let Ok((_, _)) = socket.recv_from(&mut ack_buffer.as_mut_slice()) {
                                 let ack_view = PacketView::new(ack_buffer);
@@ -195,6 +196,8 @@ impl Node {
                     } else if slot.receiver == id
                         || (!joined.load(Ordering::Relaxed) && slot.receiver == ANY_NODE)
                     {
+                        let _ = socket.set_read_timeout(Some(Duration::from_micros(TX_WINDOW)));
+
                         if let Some(mut packet_buffer) = pool.take() {
                             if let Ok((_, src)) =
                                 socket.recv_from(&mut packet_buffer.as_mut_slice())
