@@ -6,7 +6,7 @@ use std::collections::vec_deque::VecDeque;
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::AtomicU64;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::{self};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -118,10 +118,8 @@ impl Node {
                     if let Some(mut temp_packet_buffer) = pool.take() {
                         let _ = socket.recv_from(&mut temp_packet_buffer.as_mut_slice());
                     }
-                    let _ = socket.set_read_timeout(Some(Duration::from_micros(ACK_WINDOW)));
                     Self::sleep_until(clear_end_time);
                 }
-
                 // TX/RX and ACK WINDOW: transmit/receive a packet and wait/send ack
                 {
                     if slot.sender == id
@@ -159,6 +157,7 @@ impl Node {
 
                         // wait for ack
                         let _ = socket.set_read_timeout(Some(Duration::from_micros(ACK_WINDOW)));
+
                         if let Some(mut ack_buffer) = pool.take() {
                             if let Ok((_, _)) = socket.recv_from(&mut ack_buffer.as_mut_slice()) {
                                 let ack_view = PacketView::new(ack_buffer);
@@ -277,15 +276,14 @@ impl Node {
     }
 
     fn create_slot_ticker(&self) -> Receiver<u64> {
-        let (slot_ticker_sender, slot_ticker_receiver) = channel::<u64>();
+        let (slot_ticker_sender, slot_ticker_receiver) = sync_channel::<u64>(0);
         let reference_clock = Arc::clone(&self.reference_clock);
         let is_orchestrator = self.is_orchestrator;
         let id = self.id;
-
         thread::spawn(move || {
             // Set thread affinity to a core
             if let Some(core_id) = core_affinity::get_core_ids()
-                .and_then(|ids| ids.get(id as usize + CORE_AFFINITY_SLOT_TICKER).cloned())
+                .and_then(|ids| ids.get(CORE_AFFINITY_SLOT_TICKER + id as usize).cloned())
             {
                 core_affinity::set_for_current(core_id);
             } else {
@@ -313,8 +311,6 @@ impl Node {
                 }
             }
 
-            let mut absolute_slot_number = 0;
-
             if is_orchestrator {
                 reference_clock.store(
                     SystemTime::now()
@@ -334,15 +330,9 @@ impl Node {
                     .as_micros() as u64;
                 if (now - reference_time) % SLOT_DURATION == 0 {
                     slot_ticker_sender
-                        .send(absolute_slot_number % SLOTFRAME_SIZE as u64)
+                        .send((now - reference_time) / SLOT_DURATION)
                         .expect("Failed to send tick");
-                    absolute_slot_number += 1;
-
-                    if is_orchestrator
-                        && absolute_slot_number % REFERENCE_CLOCK_RESET_INTERVAL as u64 == 0
-                    {
-                        reference_clock.store(now, Ordering::Relaxed);
-                    }
+                    // thread::sleep(Duration::from_micros(SLOT_DURATION * 4 / 5));
                 }
             }
         });

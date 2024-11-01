@@ -18,7 +18,7 @@ fn main() {
     });
 
     let node1 = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(Duration::from_millis(130));
         let mut node = Node::new(1, "localhost:7777", true);
         node.routing_table
             .insert(0, "127.0.0.1:7778".parse().unwrap());
