@@ -41,7 +41,7 @@ impl Node {
         #[cfg(target_os = "linux")]
         Self::check_rt_scheduler(verbose);
 
-        let mut node = Self {
+        Self {
             id,
             is_orchestrator: id == ORCHESTRATOR_ID,
             joined: Arc::new(AtomicBool::new(id == ORCHESTRATOR_ID)),
@@ -53,23 +53,24 @@ impl Node {
             tx_queue: Arc::new(Mutex::new(VecDeque::new())),
             rx_queue: Arc::new(Mutex::new(VecDeque::new())),
             verbose,
-        };
-
-        node.run();
-        node
+        }
     }
 
     // core logic, send/receive packets following a TDMA schedule
-    fn run(&mut self) {
+    pub fn run(&mut self) {
         println!(
             "*** New DETERIX node [node_{}] running on {} ***",
             self.id,
             self.socket.local_addr().unwrap()
         );
 
-        let socket = self.socket.try_clone().expect("Failed to clone socket");
+        if !self.is_orchestrator {
+            self.join();
+        }
 
+        let socket = self.socket.try_clone().expect("Failed to clone socket");
         let pool = Arc::clone(&self.pool);
+
         let schedule = Arc::clone(&self.schedule);
         let tx_queue = Arc::clone(&self.tx_queue);
         let rx_queue = Arc::clone(&self.rx_queue);
@@ -378,35 +379,72 @@ impl Node {
         );
     }
 
+    // use non-TDMA protocol to join the network
     pub fn join(&mut self) {
-        let join_req =
-            PacketBuilder::new_join_req(&self.pool, self.id, ORCHESTRATOR_ID, self.id).unwrap();
+        loop {
+            let join_req =
+                PacketBuilder::new_join_req(&self.pool, self.id, ORCHESTRATOR_ID, self.id).unwrap();
 
-        self.enqueue_tx_packet(
-            join_req,
-            self.routing_table
-                .get(&ORCHESTRATOR_ID)
-                .expect("Destination not in routing table")
-                .clone(),
-        );
-        println!("Sent join request to {}", ORCHESTRATOR_ID);
+            self.socket
+                .send_to(
+                    join_req.as_bytes(),
+                    &self
+                        .routing_table
+                        .get(&ORCHESTRATOR_ID)
+                        .expect("Destination not in routing table")
+                        .clone(),
+                )
+                .expect("Failed to send join request");
 
-        let packet = self
-            .recv(Duration::from_secs(10))
-            .expect("No join response received");
+            println!("Sent join request to {}", ORCHESTRATOR_ID);
 
-        if let PayloadView::JoinResp(join_resp) = packet.payload() {
-            if join_resp.permitted() == 1 {
-                self.joined.store(true, Ordering::Relaxed);
-                self.reference_clock
-                    .store(join_resp.reference_clock(), Ordering::Relaxed);
-                println!(
-                    "Join response received from {}, reference clock set to {}, slots: {:?}",
-                    packet.src(),
-                    join_resp.reference_clock(),
-                    join_resp.schedule().slots
-                );
-                *self.schedule.lock().unwrap() = join_resp.schedule();
+            let _ = self
+                .socket
+                .set_read_timeout(Some(Duration::from_micros(ACK_WINDOW + TX_WINDOW)));
+            if let Some(mut packet_buffer) = self.pool.take() {
+                if let Ok((_, _src)) = self.socket.recv_from(&mut packet_buffer.as_mut_slice()) {
+                    let packet_view = PacketView::new(packet_buffer);
+                    if packet_view.magic() == MAGIC && packet_view.ptype() == PacketType::Ack {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let _ = self.socket.set_read_timeout(Some(Duration::from_secs(3)));
+        if let Some(mut packet_buffer) = self.pool.take() {
+            if let Ok((_, _src)) = self.socket.recv_from(&mut packet_buffer.as_mut_slice()) {
+                let packet_view = PacketView::new(packet_buffer);
+                let uid = packet_view.uid();
+                if packet_view.magic() == MAGIC {
+                    if let PayloadView::JoinResp(join_resp) = packet_view.payload() {
+                        if join_resp.permitted() == 1 {
+                            self.joined.store(true, Ordering::Relaxed);
+                            self.reference_clock
+                                .store(join_resp.reference_clock(), Ordering::Relaxed);
+                            println!(
+                                            "[Node {}] Join response received, reference clock set to {}, schedule: {:?}",
+                                            self.id,
+                                            join_resp.reference_clock(),
+                                            join_resp.schedule().slots
+                                        );
+                            *self.schedule.lock().unwrap() = join_resp.schedule();
+
+                            if let Some(ack) =
+                                PacketBuilder::new_ack(&self.pool, self.id, ORCHESTRATOR_ID, uid)
+                            {
+                                let _ = self.socket.send_to(
+                                    ack.as_bytes(),
+                                    &self
+                                        .routing_table
+                                        .get(&ORCHESTRATOR_ID)
+                                        .expect("Destination not in routing table")
+                                        .clone(),
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
     }

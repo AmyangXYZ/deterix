@@ -8,6 +8,7 @@ fn main() {
         orchestrator
             .routing_table
             .insert(1, "127.0.0.1:7777".parse().unwrap());
+        orchestrator.run();
         orchestrator.respond_join_req(1);
         println!("Waiting for data");
         let packet = orchestrator.recv(Duration::from_secs(10)).unwrap();
@@ -23,8 +24,7 @@ fn main() {
         node.routing_table
             .insert(0, "127.0.0.1:7778".parse().unwrap());
 
-        node.join();
-        println!("Node 1 joined");
+        node.run();
         node.send(0, "Hello".as_bytes());
         println!("Sending data");
     });
