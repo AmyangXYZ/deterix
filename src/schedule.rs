@@ -53,17 +53,23 @@ pub struct Schedule {
 }
 
 impl Schedule {
+    pub fn default() -> Self {
+        Self {
+            slots: core::array::from_fn(|i| Slot::new_idle(i as u32)),
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             slots: [
-                Slot::new_idle(0),
-                Slot::new_idle(1),
+                Slot::new_dedicate(0, 1, 2),
+                Slot::new_dedicate(1, 2, 1),
                 Slot::new_idle(2),
-                Slot::new_shared(3, ANY_NODE, ORCHESTRATOR_ID),
+                Slot::new_idle(3),
                 Slot::new_shared(4, ANY_NODE, ORCHESTRATOR_ID),
-                Slot::new_shared(5, ANY_NODE, ORCHESTRATOR_ID),
-                Slot::new_shared(6, ORCHESTRATOR_ID, ANY_NODE),
-                Slot::new_shared(7, ANY_NODE, ORCHESTRATOR_ID),
+                Slot::new_shared(5, ORCHESTRATOR_ID, ANY_NODE),
+                Slot::new_shared(6, ANY_NODE, ORCHESTRATOR_ID),
+                Slot::new_shared(7, ORCHESTRATOR_ID, ANY_NODE),
             ],
         }
     }
