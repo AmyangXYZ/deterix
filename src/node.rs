@@ -84,11 +84,18 @@ impl Node {
 
     // core logic, send/receive packets following a TDMA schedule
     fn run(&mut self) {
-        println!(
-            "*** New DETERIX node [node_{}] running on {} ***",
-            self.id,
-            self.socket.local_addr().unwrap()
-        );
+        if self.is_orchestrator {
+            println!(
+                "*** New DETERIX orchestrator running on {} ***",
+                self.socket.local_addr().unwrap()
+            );
+        } else {
+            println!(
+                "*** New DETERIX node [{}] running on {} ***",
+                self.id,
+                self.socket.local_addr().unwrap()
+            );
+        }
 
         let socket = self.socket.try_clone().expect("Failed to clone socket");
         let pool = Arc::clone(&self.pool);
@@ -119,18 +126,34 @@ impl Node {
                 }
             }
 
-            while let Ok(slot_number) = slot_ticker.recv() {
+            while let Ok((slot_number, slot_start_time)) = slot_ticker.recv() {
                 let slot =
                     schedule.lock().unwrap().slots[slot_number as usize % SLOTFRAME_SIZE as usize];
-                let slot_start_time = Instant::now();
+
+                // println!("[Node {}] *Slot {}* {:?}", id, slot_number, slot_start_time);
+
+                let slot_start_time = UNIX_EPOCH + Duration::from_micros(slot_start_time);
 
                 let clear_end_time = slot_start_time + Duration::from_micros(CLEAR_WINDOW);
                 let tx_end_time = clear_end_time + Duration::from_micros(TX_WINDOW);
                 let ack_end_time = tx_end_time + Duration::from_micros(ACK_WINDOW);
                 let slot_end_time = ack_end_time + Duration::from_micros(GUARD_BAND);
+                // println!(
+                //     "[Node {}] *Slot End times* {:?} {:?} {:?} {:?}",
+                //     id,
+                //     clear_end_time
+                //         .duration_since(UNIX_EPOCH)
+                //         .unwrap()
+                //         .as_micros(),
+                //     tx_end_time.duration_since(UNIX_EPOCH).unwrap().as_micros(),
+                //     ack_end_time.duration_since(UNIX_EPOCH).unwrap().as_micros(),
+                //     slot_end_time
+                //         .duration_since(UNIX_EPOCH)
+                //         .unwrap()
+                //         .as_micros()
+                // );
 
                 // if verbose {
-                //     println!("[Node {}] *Slot {}*", id, slot_number);
                 // }
 
                 // CLEAR WINDOW: clear packet in socket buffer from previous slots
@@ -293,8 +316,8 @@ impl Node {
         }
     }
 
-    fn create_slot_ticker(&self) -> Receiver<u64> {
-        let (slot_ticker_sender, slot_ticker_receiver) = sync_channel::<u64>(0);
+    fn create_slot_ticker(&self) -> Receiver<(u64, u64)> {
+        let (slot_ticker_sender, slot_ticker_receiver) = sync_channel::<(u64, u64)>(0);
         let reference_clock = Arc::clone(&self.reference_clock);
         let is_orchestrator = self.is_orchestrator;
         let id = self.id;
@@ -337,6 +360,10 @@ impl Node {
                         .as_micros() as u64,
                     Ordering::Relaxed,
                 );
+                println!(
+                    "[Orchestrator] Sync reference clock: {}",
+                    reference_clock.load(Ordering::Relaxed)
+                );
             }
 
             loop {
@@ -348,7 +375,7 @@ impl Node {
                     .as_micros() as u64;
                 if (now - reference_time) % SLOT_DURATION == 0 {
                     slot_ticker_sender
-                        .send((now - reference_time) / SLOT_DURATION)
+                        .send(((now - reference_time) / SLOT_DURATION, now))
                         .expect("Failed to send tick");
                     thread::sleep(Duration::from_micros(SLOT_DURATION * 4 / 5));
                 }
@@ -358,9 +385,9 @@ impl Node {
         slot_ticker_receiver
     }
 
-    fn sleep_until(deadline: Instant) {
-        while Instant::now() < deadline {
-            thread::sleep(Duration::from_micros(1));
+    fn sleep_until(deadline: SystemTime) {
+        while SystemTime::now() < deadline {
+            // thread::sleep(Duration::from_micros(1));
         }
     }
 

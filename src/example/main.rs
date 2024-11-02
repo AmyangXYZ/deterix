@@ -3,31 +3,36 @@ use std::thread;
 use std::time::Duration;
 fn main() {
     let orchestrator = thread::spawn(move || {
-        let mut orchestrator = Node::new_orchestrator("127.0.0.1:7778", true);
+        let mut orchestrator = Node::new_orchestrator("127.0.0.10:7777", false);
         orchestrator.serve();
     });
 
     let node1 = thread::spawn(move || {
-        let mut node = Node::new(1, "127.0.0.1:7777", true);
-        node.join("127.0.0.1:7778");
+        let mut node = Node::new(1, "127.0.0.11:7777", false);
+        node.join("127.0.0.10:7777");
         println!("[Node 1] Joined");
-        if let Some((packet, _)) = node.recv(Duration::from_secs(5)) {
-            if let PayloadView::Data(data) = packet.payload() {
-                println!("[Node 1] Received data: {:?}", data.data());
-            }
-        } else {
-            println!("[Node 1] No data received");
+        node.routing_table
+            .insert(2, "127.0.0.12:7777".parse().unwrap());
+
+        for i in 0..2 {
+            node.send(2, format!("Hello world - {}", i).as_bytes());
+            println!("[Node 1] Sending data: {}", i);
+            // thread::sleep(Duration::from_secs(1));
         }
     });
 
     let node2 = thread::spawn(move || {
-        let mut node = Node::new(2, "127.0.0.2:7777", true);
-        node.join("127.0.0.1:7778");
+        let mut node = Node::new(2, "127.0.0.12:7777", false);
+        node.join("127.0.0.10:7777");
         println!("[Node 2] Joined");
-        node.routing_table
-            .insert(1, "127.0.0.1:7777".parse().unwrap());
-        node.send(1, "Hello".as_bytes());
-        println!("[Node 2] Sending data");
+
+        for _ in 0..2 {
+            if let Some((packet, _)) = node.recv(Duration::from_secs(5)) {
+                if let PayloadView::Data(data) = packet.payload() {
+                    println!("[Node 2] Received data: {:?}", data.data());
+                }
+            }
+        }
     });
 
     orchestrator.join().expect("Orchestrator panicked");
