@@ -7,47 +7,20 @@
   </head>
   <body>
     <!-- Prepare a DOM with a defined width and height for ECharts -->
-    <div id="main" style="width: 100%; height: 600px"></div>
+    <div id="main" style="width: 100%; height: 400px"></div>
     <script type="text/javascript">
       async function main() {
-        const myChart = echarts.init(document.getElementById("main"))
-
-        const option = {
-          title: {
-            text: "Transmission Slot Chart",
-          },
-          xAxis: {
-            position: "top",
-            type: "value",
-            max: 1,
-            min: 0,
-            interval: 1,
-            boundaryGap: [0, 1],
-          },
-          yAxis: {
-            min: -1,
-            type: "value",
-            data: [],
-            inverse: true,
-            axisTick: {
-              show: false,
-            },
-          },
-          series: [],
-        }
-
         // from node.rs output
-        const reference_clock = 1730677483.779078
+        const reference_clock = 1730741287.338367
         // from config.rs
-        const SLOT_DURATION = 50_000 * 1e-6
-        const CLEAR_WINDOW = (SLOT_DURATION * 1) / 10
-        const TX_WINDOW = (SLOT_DURATION * 5) / 10
-        const ACK_WINDOW = (SLOT_DURATION * 3) / 10
-        const GUARD_BAND = (SLOT_DURATION * 1) / 10
-
+        const SLOT_DURATION = 10_000 * 1e-6
+        const CLEAR_WINDOW = 1 / 10
+        const TX_WINDOW = 5 / 10
+        const ACK_WINDOW = 3 / 10
+        const GUARD_BAND = 1 / 10
+        // from sudo tcpdump -n -tt -i lo 'udp and port 7777'
         const tx_log_response = await fetch("tx.log")
         const tx_log = await tx_log_response.text()
-
         const lines = tx_log.split("\n")
 
         const senders = {}
@@ -59,21 +32,64 @@
           }
           const timestamp = parseFloat(parts[0])
           const sender = parseInt(parts[2].split(".")[3]) - 10
+          const receiver = parseInt(parts[4].split(".")[3]) - 10
           const payload_size = parseInt(parts[7])
 
           if (!(sender in senders)) {
             senders[sender] = []
           }
-          senders[sender].push(timestamp)
+          senders[sender].push({ timestamp, receiver, payload_size })
           last_slot = (timestamp - reference_clock) / SLOT_DURATION + 1
+        }
+
+        const myChart = echarts.init(document.getElementById("main"))
+        const option = {
+          title: {
+            text: "Transmission Slot Chart",
+          },
+          toolbox: {
+            feature: {
+              saveAsImage: {
+                pixelRatio: 4,
+              },
+            },
+          },
+          grid: {
+            left: "2%",
+            right: "2%",
+            bottom: "2%",
+            top: "60px",
+          },
+          xAxis: {
+            position: "top",
+            type: "value",
+            max: 1,
+            min: 0,
+            interval: 1,
+            axisLabel: {
+              formatter: (value) => {
+                return value % 8
+              },
+            },
+          },
+          yAxis: {
+            min: -0.5,
+            type: "value",
+            data: [],
+            inverse: true,
+            axisTick: {
+              show: false,
+            },
+          },
+          series: [],
         }
 
         option.xAxis.max = last_slot
         // option.yAxis.data = Object.keys(senders)
-        option.yAxis.max = Object.keys(senders).length
+        option.yAxis.max = Object.keys(senders).length - 1
         option.yAxis.axisLabel = {
           formatter: (value) => {
-            if (value === -1 || value === Object.keys(senders).length) {
+            if (senders[value] == undefined) {
               return null
             }
             return value
@@ -85,15 +101,24 @@
             name: `Node ${sender}`,
             type: "line",
             data: [[0, sender]],
-            symbol: "none",
+            symbolSize: 0.1,
             step: "end",
+            label: {
+              show: true,
+              formatter: (item) => {
+                return item.name
+              },
+              offset: [7, 50],
+              fontSize: 9,
+            },
             animation: false,
-            silent: true,
           })
-          for (const timestamp of senders[sender]) {
-            console.log(timestamp, reference_clock)
-            option.series[sender].data.push([(timestamp - reference_clock) / SLOT_DURATION, sender - 0.5])
-            option.series[sender].data.push([(timestamp - reference_clock) / SLOT_DURATION + 0.2, sender])
+          for (const tx of senders[sender]) {
+            option.series[sender].data.push({
+              name: `to ${tx.receiver}\n${tx.payload_size}B`,
+              value: [(tx.timestamp - reference_clock) / SLOT_DURATION, sender - 0.5],
+            })
+            option.series[sender].data.push([(tx.timestamp - reference_clock) / SLOT_DURATION + 0.01, sender])
           }
           option.series[sender].data.push([last_slot, sender])
         }

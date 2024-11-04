@@ -197,10 +197,9 @@ impl Node {
                             );
                         }
 
-                        Self::sleep_until(tx_end_time);
-
                         // wait for ack
                         let _ = socket.set_read_timeout(Some(Duration::from_micros(ACK_WINDOW)));
+                        Self::sleep_until(tx_end_time);
 
                         if let Some(mut ack_buffer) = pool.take() {
                             if let Ok((_, _)) = socket.recv_from(&mut ack_buffer.as_mut_slice()) {
@@ -388,10 +387,19 @@ impl Node {
 
     fn sleep_until(deadline: SystemTime) {
         while SystemTime::now() < deadline {
-            // thread::sleep(Duration::from_micros(1));
+            #[cfg(target_os = "linux")]
+            if RT_SCHEDULER_AVAILABLE.load(Ordering::Relaxed) {
+                unsafe {
+                    libc::sched_yield();
+                }
+            } else {
+                thread::yield_now();
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            thread::yield_now();
         }
     }
-
     fn enqueue_tx_packet(&mut self, packet: PacketBuffer<'static>, addr: SocketAddr) {
         self.tx_queue.lock().unwrap().push_back((packet, addr));
     }
@@ -454,7 +462,7 @@ impl Node {
 
             let _ = self
                 .socket
-                .set_read_timeout(Some(Duration::from_micros(ACK_WINDOW + TX_WINDOW)));
+                .set_read_timeout(Some(Duration::from_micros(SLOT_DURATION * 2)));
             if let Some(mut packet_buffer) = self.pool.take() {
                 if let Ok((_, _src)) = self.socket.recv_from(&mut packet_buffer.as_mut_slice()) {
                     let packet_view = PacketView::new(packet_buffer);
@@ -465,47 +473,48 @@ impl Node {
             }
         }
 
-        let _ = self.socket.set_read_timeout(Some(Duration::from_secs(5)));
-        if let Some(mut packet_buffer) = self.pool.take() {
-            if let Ok((_, _src)) = self.socket.recv_from(&mut packet_buffer.as_mut_slice()) {
-                let packet_view = PacketView::new(packet_buffer);
-                let uid = packet_view.uid();
-                if packet_view.magic() == MAGIC {
-                    if let PayloadView::JoinResp(join_resp) = packet_view.payload() {
-                        if join_resp.permitted() == 1 {
-                            self.joined.store(true, Ordering::Relaxed);
-                            self.reference_clock
-                                .store(join_resp.reference_clock(), Ordering::Relaxed);
-                            if self.verbose {
-                                println!(
-                                    "[Node {}] Join response received, sync clock and schedule",
-                                    self.id
-                                );
-                            }
-                            *self.schedule.lock().unwrap() = join_resp.schedule();
+        loop {
+            let _ = self.socket.set_read_timeout(Some(Duration::from_secs(5)));
+            if let Some(mut packet_buffer) = self.pool.take() {
+                if let Ok((_, _src)) = self.socket.recv_from(&mut packet_buffer.as_mut_slice()) {
+                    let packet_view = PacketView::new(packet_buffer);
+                    let uid = packet_view.uid();
+                    if packet_view.magic() == MAGIC {
+                        if let PayloadView::JoinResp(join_resp) = packet_view.payload() {
+                            if join_resp.permitted() == 1 {
+                                self.joined.store(true, Ordering::Relaxed);
+                                self.reference_clock
+                                    .store(join_resp.reference_clock(), Ordering::Relaxed);
+                                if self.verbose {
+                                    println!(
+                                        "[Node {}] Join response received, sync clock and schedule",
+                                        self.id
+                                    );
+                                }
+                                *self.schedule.lock().unwrap() = join_resp.schedule();
 
-                            if let Some(ack) =
-                                PacketBuilder::new_ack(&self.pool, self.id, ORCHESTRATOR_ID, uid)
-                            {
-                                let _ = self.socket.send_to(
-                                    ack.as_bytes(),
-                                    &self
-                                        .routing_table
-                                        .get(&ORCHESTRATOR_ID)
-                                        .expect("Destination not in routing table")
-                                        .clone(),
-                                );
+                                if let Some(ack) = PacketBuilder::new_ack(
+                                    &self.pool,
+                                    self.id,
+                                    ORCHESTRATOR_ID,
+                                    uid,
+                                ) {
+                                    let _ = self.socket.send_to(
+                                        ack.as_bytes(),
+                                        &self
+                                            .routing_table
+                                            .get(&ORCHESTRATOR_ID)
+                                            .expect("Destination not in routing table")
+                                            .clone(),
+                                    );
+                                }
+                                self.run();
+                                return;
                             }
                         }
                     }
                 }
             }
-        }
-
-        if !self.joined.load(Ordering::Relaxed) {
-            panic!("Failed to join the network");
-        } else {
-            self.run();
         }
     }
 
