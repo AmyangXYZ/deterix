@@ -150,6 +150,7 @@ impl<'a> PacketBuilder<'a> {
     fn write_join_resp_payload(
         &mut self,
         permitted: u8,
+        slot_duration: u64,
         reference_clock: u64,
         schedule: &Schedule,
     ) {
@@ -157,15 +158,16 @@ impl<'a> PacketBuilder<'a> {
 
         payload[36] = permitted;
         if permitted == 1 {
-            payload[37..45].copy_from_slice(&reference_clock.to_be_bytes());
+            payload[37..45].copy_from_slice(&slot_duration.to_be_bytes());
+            payload[45..53].copy_from_slice(&reference_clock.to_be_bytes());
             for (i, slot) in schedule.slots.iter().enumerate() {
-                let offset = 45 + i * 13; // Base offset for each slot
+                let offset = 53 + i * 13; // Base offset for each slot
                 payload[offset] = slot.slot_type as u8;
                 payload[offset + 1..offset + 5].copy_from_slice(&slot.slot_number.to_be_bytes());
                 payload[offset + 5..offset + 9].copy_from_slice(&slot.sender.to_be_bytes());
                 payload[offset + 9..offset + 13].copy_from_slice(&slot.receiver.to_be_bytes());
             }
-            self.buffer.set_size(45 + SLOTFRAME_SIZE * 13);
+            self.buffer.set_size(53 + SLOTFRAME_SIZE * 13);
         } else {
             self.buffer.set_size(37);
         }
@@ -209,13 +211,14 @@ impl<'a> PacketBuilder<'a> {
         src: u32,
         dst: u32,
         permitted: u8,
+        slot_duration: u64,
         reference_clock: u64,
         schedule: &Schedule,
     ) -> Option<PacketBuffer<'a>> {
         let buffer = pool.take()?;
         let mut packet_builder = Self::new(buffer);
         packet_builder.write_header(PacketType::JoinResp, src, dst, 0);
-        packet_builder.write_join_resp_payload(permitted, reference_clock, schedule);
+        packet_builder.write_join_resp_payload(permitted, slot_duration, reference_clock, schedule);
         Some(packet_builder.buffer)
     }
 
@@ -271,12 +274,15 @@ impl<'a> JoinRespView<'a> {
     pub fn permitted(&self) -> u8 {
         self.payload[0]
     }
-    pub fn reference_clock(&self) -> u64 {
+    pub fn slot_duration(&self) -> u64 {
         u64::from_be_bytes(self.payload[1..9].try_into().unwrap())
+    }
+    pub fn reference_clock(&self) -> u64 {
+        u64::from_be_bytes(self.payload[9..17].try_into().unwrap())
     }
     pub fn schedule(&self) -> Schedule {
         let payload = self.payload;
-        let slots = payload[9..9 + 13 * SLOTFRAME_SIZE]
+        let slots = payload[17..17 + 13 * SLOTFRAME_SIZE]
             .chunks(13)
             .map(|chunk| Slot {
                 slot_type: SlotType::from(chunk[0]),

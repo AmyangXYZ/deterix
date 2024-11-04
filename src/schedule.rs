@@ -58,21 +58,4 @@ impl Schedule {
             slots: core::array::from_fn(|i| Slot::new_idle(i as u32)),
         }
     }
-
-    pub fn new() -> Self {
-        Self {
-            slots: [
-                Slot::new_dedicate(0, 1, 2),
-                Slot::new_dedicate(1, 1, 2),
-                Slot::new_dedicate(2, 1, 2),
-                Slot::new_dedicate(3, 1, 2),
-                Slot::new_dedicate(4, 1, 2),
-                Slot::new_dedicate(5, 1, 2),
-                Slot::new_shared(6, ANY_NODE, ORCHESTRATOR_ID),
-                Slot::new_shared(7, ORCHESTRATOR_ID, ANY_NODE),
-                Slot::new_shared(8, ANY_NODE, ORCHESTRATOR_ID),
-                Slot::new_shared(9, ORCHESTRATOR_ID, ANY_NODE),
-            ],
-        }
-    }
 }

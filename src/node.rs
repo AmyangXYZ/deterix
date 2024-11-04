@@ -1,7 +1,7 @@
 use crate::config::*;
 use crate::packet::*;
 use crate::schedule::*;
-use core_affinity;
+// use core_affinity;
 use std::collections::vec_deque::VecDeque;
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
@@ -27,6 +27,7 @@ pub struct Node {
     pub schedule: Arc<Mutex<Schedule>>,
     pub routing_table: HashMap<u32, SocketAddr>,
     is_orchestrator: bool,
+    slot_duration: u64,
     joined: Arc<AtomicBool>,
     reference_clock: Arc<AtomicU64>,
     pool: Arc<PacketBufferPool>,
@@ -49,6 +50,7 @@ impl Node {
             id,
             is_orchestrator: false,
             joined: Arc::new(AtomicBool::new(false)),
+            slot_duration: 0,
             reference_clock: Arc::new(AtomicU64::new(0)),
             routing_table: HashMap::new(),
             schedule: Arc::new(Mutex::new(Schedule::default())),
@@ -60,7 +62,12 @@ impl Node {
         }
     }
 
-    pub fn new_orchestrator(address: &str, verbose: bool) -> Self {
+    pub fn new_orchestrator(
+        address: &str,
+        slot_duration: u64,
+        schedule: Schedule,
+        verbose: bool,
+    ) -> Self {
         #[cfg(target_os = "linux")]
         Self::check_rt_scheduler(verbose);
 
@@ -69,8 +76,9 @@ impl Node {
             is_orchestrator: true,
             joined: Arc::new(AtomicBool::new(true)),
             reference_clock: Arc::new(AtomicU64::new(0)),
+            slot_duration,
             routing_table: HashMap::new(),
-            schedule: Arc::new(Mutex::new(Schedule::new())),
+            schedule: Arc::new(Mutex::new(schedule)),
             pool: Arc::new(PacketBufferPool::new()),
             socket: UdpSocket::bind(address).unwrap(),
             tx_queue: Arc::new(Mutex::new(VecDeque::new())),
@@ -78,15 +86,15 @@ impl Node {
             verbose,
         };
 
-        orchestrator.run();
+        orchestrator.run(slot_duration);
         orchestrator
     }
 
     // core logic, send/receive packets following a TDMA schedule
-    fn run(&mut self) {
+    fn run(&mut self, slot_duration: u64) {
         if self.is_orchestrator {
             println!(
-                "*** New DETERIX orchestrator running on {} ***",
+                "*** New DETERIX Orchestrator running on {} ***",
                 self.socket.local_addr().unwrap()
             );
         } else {
@@ -105,7 +113,7 @@ impl Node {
         let rx_queue = Arc::clone(&self.rx_queue);
         let id = self.id;
         let verbose = self.verbose;
-        let slot_ticker = self.create_slot_ticker();
+        let slot_ticker = self.create_slot_ticker(slot_duration);
 
         thread::spawn(move || {
             #[cfg(target_os = "linux")]
@@ -126,18 +134,23 @@ impl Node {
                 }
             }
 
+            let clear_window = slot_duration * 1 / 10;
+            let tx_window = slot_duration * 5 / 10;
+            let ack_window = slot_duration * 3 / 10;
+            let guard_band = slot_duration * 1 / 10;
+            let slotframe_size = schedule.lock().unwrap().slots.len();
             while let Ok((slot_number, slot_start_time)) = slot_ticker.recv() {
                 let slot =
-                    schedule.lock().unwrap().slots[slot_number as usize % SLOTFRAME_SIZE as usize];
+                    schedule.lock().unwrap().slots[slot_number as usize % slotframe_size as usize];
 
                 // println!("[Node {}] *Slot {}* {:?}", id, slot_number, slot_start_time);
 
                 let slot_start_time = UNIX_EPOCH + Duration::from_micros(slot_start_time);
 
-                let clear_end_time = slot_start_time + Duration::from_micros(CLEAR_WINDOW);
-                let tx_end_time = clear_end_time + Duration::from_micros(TX_WINDOW);
-                let ack_end_time = tx_end_time + Duration::from_micros(ACK_WINDOW);
-                let slot_end_time = ack_end_time + Duration::from_micros(GUARD_BAND);
+                let clear_end_time = slot_start_time + Duration::from_micros(clear_window);
+                let tx_end_time = clear_end_time + Duration::from_micros(tx_window);
+                let ack_end_time = tx_end_time + Duration::from_micros(ack_window);
+                let slot_end_time = ack_end_time + Duration::from_micros(guard_band);
                 // println!(
                 //     "[Node {}] *Slot End times* {:?} {:?} {:?} {:?}",
                 //     id,
@@ -159,7 +172,7 @@ impl Node {
                 // CLEAR WINDOW: clear packet in socket buffer from previous slots
                 {
                     let _ =
-                        socket.set_read_timeout(Some(Duration::from_micros(CLEAR_WINDOW * 4 / 5)));
+                        socket.set_read_timeout(Some(Duration::from_micros(clear_window * 4 / 5)));
                     if let Some(mut temp_packet_buffer) = pool.take() {
                         let _ = socket.recv_from(&mut temp_packet_buffer.as_mut_slice());
                     }
@@ -198,7 +211,7 @@ impl Node {
                         }
 
                         // wait for ack
-                        let _ = socket.set_read_timeout(Some(Duration::from_micros(ACK_WINDOW)));
+                        let _ = socket.set_read_timeout(Some(Duration::from_micros(ack_window)));
                         Self::sleep_until(tx_end_time);
 
                         if let Some(mut ack_buffer) = pool.take() {
@@ -236,7 +249,7 @@ impl Node {
                             Self::sleep_until(ack_end_time);
                         }
                     } else if slot.receiver == id {
-                        let _ = socket.set_read_timeout(Some(Duration::from_micros(TX_WINDOW)));
+                        let _ = socket.set_read_timeout(Some(Duration::from_micros(tx_window)));
 
                         if let Some(mut packet_buffer) = pool.take() {
                             if let Ok((_, src)) =
@@ -291,13 +304,7 @@ impl Node {
             }
         });
 
-        if let Some(core_id) = core_affinity::get_core_ids()
-            .and_then(|ids| ids.get(CORE_AFFINITY_PACKET_QUEUE).cloned())
-        {
-            core_affinity::set_for_current(core_id);
-        } else {
-            eprintln!("! Failed to set core affinity for packet queue");
-        }
+        // core_affinity::set_for_current(core_affinity::CoreId { id: id as usize });
     }
 
     #[cfg(target_os = "linux")]
@@ -316,20 +323,13 @@ impl Node {
         }
     }
 
-    fn create_slot_ticker(&self) -> Receiver<(u64, u64)> {
+    fn create_slot_ticker(&self, slot_duration: u64) -> Receiver<(u64, u64)> {
         let (slot_ticker_sender, slot_ticker_receiver) = sync_channel::<(u64, u64)>(0);
         let reference_clock = Arc::clone(&self.reference_clock);
         let is_orchestrator = self.is_orchestrator;
-        let id = self.id;
+        // let id = self.id;
         thread::spawn(move || {
-            // Set thread affinity to a core
-            if let Some(core_id) = core_affinity::get_core_ids()
-                .and_then(|ids| ids.get(CORE_AFFINITY_SLOT_TICKER + id as usize).cloned())
-            {
-                core_affinity::set_for_current(core_id);
-            } else {
-                eprintln!("! Failed to set core affinity for slot ticker");
-            }
+            // core_affinity::set_for_current(core_affinity::CoreId { id: id as usize });
 
             #[cfg(target_os = "linux")]
             if RT_SCHEDULER_AVAILABLE.load(Ordering::Relaxed) {
@@ -373,12 +373,23 @@ impl Node {
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_micros() as u64;
-                if (now - reference_time) % SLOT_DURATION == 0 {
+                if (now - reference_time) % slot_duration == 0 {
                     slot_ticker_sender
-                        .send(((now - reference_time) / SLOT_DURATION, now))
+                        .send(((now - reference_time) / slot_duration, now))
                         .expect("Failed to send tick");
-                    thread::sleep(Duration::from_micros(SLOT_DURATION * 4 / 5));
+                    // thread::sleep(Duration::from_micros(SLOT_DURATION * 4 / 5));
                 }
+                #[cfg(target_os = "linux")]
+                if RT_SCHEDULER_AVAILABLE.load(Ordering::Relaxed) {
+                    unsafe {
+                        libc::sched_yield();
+                    }
+                } else {
+                    thread::yield_now();
+                }
+
+                #[cfg(not(target_os = "linux"))]
+                thread::yield_now();
             }
         });
 
@@ -462,7 +473,7 @@ impl Node {
 
             let _ = self
                 .socket
-                .set_read_timeout(Some(Duration::from_micros(SLOT_DURATION * 2)));
+                .set_read_timeout(Some(Duration::from_micros(1000)));
             if let Some(mut packet_buffer) = self.pool.take() {
                 if let Ok((_, _src)) = self.socket.recv_from(&mut packet_buffer.as_mut_slice()) {
                     let packet_view = PacketView::new(packet_buffer);
@@ -483,15 +494,17 @@ impl Node {
                         if let PayloadView::JoinResp(join_resp) = packet_view.payload() {
                             if join_resp.permitted() == 1 {
                                 self.joined.store(true, Ordering::Relaxed);
+                                self.slot_duration = join_resp.slot_duration();
                                 self.reference_clock
                                     .store(join_resp.reference_clock(), Ordering::Relaxed);
+                                *self.schedule.lock().unwrap() = join_resp.schedule();
+
                                 if self.verbose {
                                     println!(
                                         "[Node {}] Join response received, sync clock and schedule",
                                         self.id
                                     );
                                 }
-                                *self.schedule.lock().unwrap() = join_resp.schedule();
 
                                 if let Some(ack) = PacketBuilder::new_ack(
                                     &self.pool,
@@ -508,7 +521,7 @@ impl Node {
                                             .clone(),
                                     );
                                 }
-                                self.run();
+                                self.run(self.slot_duration);
                                 return;
                             }
                         }
@@ -537,6 +550,7 @@ impl Node {
                         self.id,
                         packet.src(),
                         1,
+                        self.slot_duration,
                         self.reference_clock.load(Ordering::Relaxed),
                         &self.schedule.lock().unwrap(),
                     )
