@@ -36,6 +36,10 @@ The network operates on a Time Division Multiple Access (TDMA) protocol with Nod
 +-------+-----------------------------------+---------------------+-------+
 ```
 
+Example transmission-slot chart showing two nodes join and synchronize with orchestrator and send 10 data packets in their dedicate slots.
+
+![](./slot_chart/chart_1.png)
+
 ### Time Synchronization
 - **Node 0 (Orchestrator)**
   - Provides network-wide time reference using system clock
