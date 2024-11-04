@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Slot Chart</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+  </head>
+  <body>
+    <!-- Prepare a DOM with a defined width and height for ECharts -->
+    <div id="main" style="width: 100%; height: 600px"></div>
+    <script type="text/javascript">
+      async function main() {
+        const myChart = echarts.init(document.getElementById("main"))
+
+        const option = {
+          title: {
+            text: "Transmission Slot Chart",
+          },
+          xAxis: {
+            position: "top",
+            type: "value",
+            max: 1,
+            min: 0,
+            interval: 1,
+            boundaryGap: [0, 1],
+          },
+          yAxis: {
+            min: -1,
+            type: "value",
+            data: [],
+            inverse: true,
+            axisTick: {
+              show: false,
+            },
+          },
+          series: [],
+        }
+
+        // from node.rs output
+        const reference_clock = 1730677483.779078
+        // from config.rs
+        const SLOT_DURATION = 50_000 * 1e-6
+        const CLEAR_WINDOW = (SLOT_DURATION * 1) / 10
+        const TX_WINDOW = (SLOT_DURATION * 5) / 10
+        const ACK_WINDOW = (SLOT_DURATION * 3) / 10
+        const GUARD_BAND = (SLOT_DURATION * 1) / 10
+
+        const tx_log_response = await fetch("tx.log")
+        const tx_log = await tx_log_response.text()
+
+        const lines = tx_log.split("\n")
+
+        const senders = {}
+        let last_slot = 0
+        for (const line of lines) {
+          const parts = line.split(" ")
+          if (parts.length < 8) {
+            continue
+          }
+          const timestamp = parseFloat(parts[0])
+          const sender = parseInt(parts[2].split(".")[3]) - 10
+          const payload_size = parseInt(parts[7])
+
+          if (!(sender in senders)) {
+            senders[sender] = []
+          }
+          senders[sender].push(timestamp)
+          last_slot = (timestamp - reference_clock) / SLOT_DURATION + 1
+        }
+
+        option.xAxis.max = last_slot
+        // option.yAxis.data = Object.keys(senders)
+        option.yAxis.max = Object.keys(senders).length
+        option.yAxis.axisLabel = {
+          formatter: (value) => {
+            if (value === -1 || value === Object.keys(senders).length) {
+              return null
+            }
+            return value
+          },
+        }
+
+        for (const sender in senders) {
+          option.series.push({
+            name: `Node ${sender}`,
+            type: "line",
+            data: [[0, sender]],
+            symbol: "none",
+            step: "end",
+            animation: false,
+            silent: true,
+          })
+          for (const timestamp of senders[sender]) {
+            console.log(timestamp, reference_clock)
+            option.series[sender].data.push([(timestamp - reference_clock) / SLOT_DURATION, sender - 0.5])
+            option.series[sender].data.push([(timestamp - reference_clock) / SLOT_DURATION + 0.2, sender])
+          }
+          option.series[sender].data.push([last_slot, sender])
+        }
+
+        myChart.setOption(option)
+      }
+      main()
+    </script>
+  </body>
+</html>

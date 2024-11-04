@@ -64,8 +64,8 @@ impl Schedule {
             slots: [
                 Slot::new_dedicate(0, 1, 2),
                 Slot::new_dedicate(1, 2, 1),
-                Slot::new_idle(2),
-                Slot::new_idle(3),
+                Slot::new_dedicate(2, 1, 2),
+                Slot::new_dedicate(3, 2, 1),
                 Slot::new_shared(4, ANY_NODE, ORCHESTRATOR_ID),
                 Slot::new_shared(5, ORCHESTRATOR_ID, ANY_NODE),
                 Slot::new_shared(6, ANY_NODE, ORCHESTRATOR_ID),

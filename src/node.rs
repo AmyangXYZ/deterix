@@ -165,6 +165,7 @@ impl Node {
                     }
                     Self::sleep_until(clear_end_time);
                 }
+
                 // TX/RX and ACK WINDOW: transmit/receive a packet and wait/send ack
                 {
                     if slot.sender == id {
@@ -362,7 +363,7 @@ impl Node {
                 );
                 println!(
                     "[Orchestrator] Sync reference clock: {}",
-                    reference_clock.load(Ordering::Relaxed)
+                    reference_clock.load(Ordering::Relaxed) as f64 / 1e6
                 );
             }
 

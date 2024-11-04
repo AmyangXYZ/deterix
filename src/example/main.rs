@@ -14,7 +14,7 @@ fn main() {
         node.routing_table
             .insert(2, "127.0.0.12:7777".parse().unwrap());
 
-        for i in 0..2 {
+        for i in 0..3 {
             node.send(2, format!("Hello world - {}", i).as_bytes());
             println!("[Node 1] Sending data: {}", i);
             // thread::sleep(Duration::from_secs(1));
@@ -26,7 +26,7 @@ fn main() {
         node.join("127.0.0.10:7777");
         println!("[Node 2] Joined");
 
-        for _ in 0..2 {
+        for _ in 0..3 {
             if let Some((packet, _)) = node.recv(Duration::from_secs(5)) {
                 if let PayloadView::Data(data) = packet.payload() {
                     println!("[Node 2] Received data: {:?}", data.data());
