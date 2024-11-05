@@ -1,19 +1,23 @@
 # Deterix: Deterministic Network Emulator with Microsecond Timing Precision
 
-Deterix is a lightweight network emulator written in Rust for building distributed applications that require precise timing control. It provides time-slotted communication with <1µs jitter on COTS hardware running Linux with PREEMPT_RT patch.
+Deterix is a lightweight communication framework designed specifically for modular digital twins requiring deterministic data exchange. Built on PREEMPT_RT Linux, it achieves microsecond-precision timing on commodity hardware through pure software implementation, enabling reliable real-time communication between digital twin components without requiring specialized hardware. The framework leverages standard Commercial Off-The-Shelf (COTS) computers and regular network infrastructure, making it an accessible solution for distributed digital twin deployments.
 
 ## Features
 
 - Time-slotted communication (TDMA)
-- Microsecond timing precision (<1µs jitter)
+- Guaranteed message delivery windows
+- Microsecond timing precision of [slot ticker](https://github.com/AmyangXYZ/rt_ticker)
 - No GC interruptions
 - Zero-copy packet handling
 - Distributed architecture
+- Runs on any modern COTS hardware
 
 ## Network Architecture
 
 ### Overview
+
 The network operates on a Time Division Multiple Access (TDMA) protocol with Node 0 serving as the network orchestrator. Key architectural features include:
+
 - Distributed time synchronization with <1µs precision
 - Deterministic slot-based communication
 - Dynamic network formation and management
@@ -41,7 +45,9 @@ Example transmission-slot chart showing two nodes join and synchronize with orch
 ![](./slot_chart/chart_1.png)
 
 ### Time Synchronization
+
 - **Node 0 (Orchestrator)**
+
   - Provides network-wide time reference using system clock
   - Manages slot timing and synchronization
   - Broadcasts periodic sync messages
@@ -54,7 +60,9 @@ Example transmission-slot chart showing two nodes join and synchronize with orch
 ## Network Operations
 
 ### Network Formation
+
 1. **Initialization Phase**
+
    - Node 0 starts as orchestrator
    - Dedicated join slots are reserved in each slotframe
    - New nodes begin in unsynchronized state
@@ -73,7 +81,9 @@ Example transmission-slot chart showing two nodes join and synchronize with orch
    ```
 
 ### Communication Protocol
+
 1. **Slot Assignment**
+
    - Deterministic sender/receiver pairs per slot
    - Scheduled transmission windows
    - Guard bands prevent overlap
@@ -84,7 +94,9 @@ Example transmission-slot chart showing two nodes join and synchronize with orch
    - Sequence number tracking
 
 ### Implementation Details
+
 - **Core Components**
+
   - TX/RX Queue Management
   - Slot Ticker System
   - Zero-copy Packet Pool
@@ -95,7 +107,6 @@ Example transmission-slot chart showing two nodes join and synchronize with orch
   - RT scheduler prioritization
   - Efficient buffer management
   - Microsecond-precision timing
-
 
 ## LICENSE
 

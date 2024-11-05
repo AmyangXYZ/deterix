@@ -124,7 +124,7 @@ impl Node {
 
                     if libc::pthread_setschedparam(
                         libc::pthread_self(),
-                        libc::SCHED_RR,
+                        libc::SCHED_FIFO,
                         &sched_param,
                     ) != 0
                     {
