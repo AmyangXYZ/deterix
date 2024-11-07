@@ -2,6 +2,8 @@ pub const HEADER_SIZE: usize = 176;
 pub const DATA_SIZE: usize = 1024;
 pub const PACKET_SIZE: usize = HEADER_SIZE + DATA_SIZE + 2; // 2 bytes for data size
 
+pub const MAX_RETRIES: usize = 3;
+
 pub const MAGIC: u16 = 0xCAFE;
 
 pub const SLOTFRAME_SIZE: usize = 10; // in slots

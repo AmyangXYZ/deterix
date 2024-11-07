@@ -32,7 +32,7 @@ pub struct Node {
     reference_clock: Arc<AtomicU64>,
     pool: Arc<PacketBufferPool>,
     socket: UdpSocket,
-    tx_queue: Arc<Mutex<VecDeque<(PacketBuffer<'static>, SocketAddr)>>>,
+    tx_queue: Arc<Mutex<VecDeque<(PacketBuffer<'static>, SocketAddr, usize)>>>,
     rx_queue: Arc<Mutex<VecDeque<(PacketBuffer<'static>, SocketAddr)>>>,
     verbose: bool,
 }
@@ -124,7 +124,7 @@ impl Node {
 
                     if libc::pthread_setschedparam(
                         libc::pthread_self(),
-                        libc::SCHED_FIFO,
+                        libc::SCHED_RR,
                         &sched_param,
                     ) != 0
                     {
@@ -182,19 +182,23 @@ impl Node {
                 // TX/RX and ACK WINDOW: transmit/receive a packet and wait/send ack
                 {
                     if slot.sender == id {
-                        let Some((packet_buffer, addr)) = tx_queue.lock().unwrap().pop_front()
+                        let Some((packet_buffer, addr, attempts)) =
+                            tx_queue.lock().unwrap().pop_front()
                         else {
                             continue;
                         };
+
                         let packet_view = PacketView::new(packet_buffer);
                         if packet_view.src() == id
                             && (slot.receiver == packet_view.dst() || (slot.receiver == ANY_NODE))
                         {
                         } else {
-                            tx_queue
-                                .lock()
-                                .unwrap()
-                                .push_front((packet_view.buffer, addr));
+                            // not for this receiver, push back to queue
+                            tx_queue.lock().unwrap().push_front((
+                                packet_view.buffer,
+                                addr,
+                                attempts,
+                            ));
                             continue;
                         }
 
@@ -205,8 +209,8 @@ impl Node {
                         let dst = packet_view.dst();
                         if verbose {
                             println!(
-                                "[Node {}] *Slot {}* Sent {:?} to {}",
-                                id, slot_number, ptype, dst
+                                "[Node {}] *Slot {}* Sent {:?} to {}, attempts: {}",
+                                id, slot_number, ptype, dst, attempts
                             );
                         }
 
@@ -237,13 +241,15 @@ impl Node {
                             } else {
                                 if verbose {
                                     println!("[Node {}] Ack timeout", id);
-                                    println!("[Node {}] Resent {:?} to {}", id, ptype, dst);
                                 }
-                                // resend the packet immediately at the next slot
-                                tx_queue
-                                    .lock()
-                                    .unwrap()
-                                    .push_front((packet_view.buffer, addr));
+                                if attempts < MAX_RETRIES {
+                                    // resend the packet immediately at the next slot
+                                    tx_queue.lock().unwrap().push_front((
+                                        packet_view.buffer,
+                                        addr,
+                                        attempts + 1,
+                                    ));
+                                }
                             }
 
                             Self::sleep_until(ack_end_time);
@@ -412,7 +418,7 @@ impl Node {
         }
     }
     fn enqueue_tx_packet(&mut self, packet: PacketBuffer<'static>, addr: SocketAddr) {
-        self.tx_queue.lock().unwrap().push_back((packet, addr));
+        self.tx_queue.lock().unwrap().push_back((packet, addr, 0));
     }
 
     fn dequeue_rx_packet(&mut self) -> Option<(PacketBuffer<'static>, SocketAddr)> {

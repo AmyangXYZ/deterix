@@ -6,7 +6,7 @@ fn main() {
     let orchestrator = thread::spawn(move || {
         let mut orchestrator = Node::new_orchestrator(
             "127.0.0.10:7777",
-            1000,
+            10_000,
             Schedule {
                 slots: [
                     Slot::new_dedicate(0, 1, 2),
