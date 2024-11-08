@@ -27,6 +27,7 @@ pub struct Node {
     pub schedule: Arc<Mutex<Schedule>>,
     pub routing_table: HashMap<u32, SocketAddr>,
     is_orchestrator: bool,
+    current_slot: Arc<AtomicU64>,
     slot_duration: u64,
     joined: Arc<AtomicBool>,
     reference_clock: Arc<AtomicU64>,
@@ -50,6 +51,7 @@ impl Node {
             id,
             is_orchestrator: false,
             joined: Arc::new(AtomicBool::new(false)),
+            current_slot: Arc::new(AtomicU64::new(0)),
             slot_duration: 0,
             reference_clock: Arc::new(AtomicU64::new(0)),
             routing_table: HashMap::new(),
@@ -75,6 +77,7 @@ impl Node {
             id: ORCHESTRATOR_ID,
             is_orchestrator: true,
             joined: Arc::new(AtomicBool::new(true)),
+            current_slot: Arc::new(AtomicU64::new(0)),
             reference_clock: Arc::new(AtomicU64::new(0)),
             slot_duration,
             routing_table: HashMap::new(),
@@ -111,6 +114,7 @@ impl Node {
         let schedule = Arc::clone(&self.schedule);
         let tx_queue = Arc::clone(&self.tx_queue);
         let rx_queue = Arc::clone(&self.rx_queue);
+        let current_slot = Arc::clone(&self.current_slot);
         let id = self.id;
         let verbose = self.verbose;
         let slot_ticker = self.create_slot_ticker(slot_duration);
@@ -172,15 +176,30 @@ impl Node {
                 // CLEAR WINDOW: clear packet in socket buffer from previous slots
                 {
                     let _ =
-                        socket.set_read_timeout(Some(Duration::from_micros(clear_window * 4 / 5)));
+                        socket.set_read_timeout(Some(Duration::from_micros(clear_window * 2 / 5)));
                     if let Some(mut temp_packet_buffer) = pool.take() {
                         let _ = socket.recv_from(&mut temp_packet_buffer.as_mut_slice());
                     }
+
+                    if current_slot.load(Ordering::Acquire) != slot_number {
+                        // println!(
+                        //     "force exit clear window, current: {}, slot: {}",
+                        //     current_slot.load(Ordering::Acquire),
+                        //     slot_number
+                        // );
+                        continue;
+                    }
+
                     Self::sleep_until(clear_end_time);
                 }
 
                 // TX/RX and ACK WINDOW: transmit/receive a packet and wait/send ack
                 {
+                    if current_slot.load(Ordering::Acquire) != slot_number {
+                        // println!("force exit tx/rx window");
+                        continue;
+                    }
+
                     if slot.sender == id {
                         let Some((packet_buffer, addr, attempts)) =
                             tx_queue.lock().unwrap().pop_front()
@@ -214,9 +233,19 @@ impl Node {
                             );
                         }
 
+                        if current_slot.load(Ordering::Acquire) != slot_number {
+                            // println!("force exit tx window");
+                            continue;
+                        }
+
                         // wait for ack
                         let _ = socket.set_read_timeout(Some(Duration::from_micros(ack_window)));
                         Self::sleep_until(tx_end_time);
+
+                        if current_slot.load(Ordering::Acquire) != slot_number {
+                            // println!("force exit ack window");
+                            continue;
+                        }
 
                         if let Some(mut ack_buffer) = pool.take() {
                             if let Ok((_, _)) = socket.recv_from(&mut ack_buffer.as_mut_slice()) {
@@ -252,6 +281,11 @@ impl Node {
                                 }
                             }
 
+                            if current_slot.load(Ordering::Acquire) != slot_number {
+                                // println!("force exit ack window");
+                                continue;
+                            }
+
                             Self::sleep_until(ack_end_time);
                         }
                     } else if slot.receiver == id {
@@ -261,6 +295,11 @@ impl Node {
                             if let Ok((_, src)) =
                                 socket.recv_from(&mut packet_buffer.as_mut_slice())
                             {
+                                if current_slot.load(Ordering::Acquire) != slot_number {
+                                    // println!("force exit rx window");
+                                    continue;
+                                }
+
                                 let packet_view = PacketView::new(packet_buffer);
                                 let uid = packet_view.uid();
 
@@ -293,7 +332,15 @@ impl Node {
                                         slot.sender,
                                         uid,
                                     ) {
+                                        if current_slot.load(Ordering::Acquire) != slot_number {
+                                            // println!("force exit rx window");
+                                            continue;
+                                        }
                                         Self::sleep_until(tx_end_time);
+                                        if current_slot.load(Ordering::Acquire) != slot_number {
+                                            // println!("force exit ack window");
+                                            continue;
+                                        }
                                         let _ = socket.send_to(ack.as_bytes(), src);
                                         Self::sleep_until(ack_end_time);
                                     }
@@ -303,6 +350,10 @@ impl Node {
                     }
                 }
 
+                if current_slot.load(Ordering::Acquire) != slot_number {
+                    // println!("force exit guard window, slot: {}", slot_number);
+                    continue;
+                }
                 // GUARD BAND: wait for guard band
                 {
                     Self::sleep_until(slot_end_time);
@@ -333,6 +384,7 @@ impl Node {
         let (slot_ticker_sender, slot_ticker_receiver) = sync_channel::<(u64, u64)>(0);
         let reference_clock = Arc::clone(&self.reference_clock);
         let is_orchestrator = self.is_orchestrator;
+        let current_slot = Arc::clone(&self.current_slot);
         // let id = self.id;
         thread::spawn(move || {
             // core_affinity::set_for_current(core_affinity::CoreId { id: id as usize });
@@ -380,8 +432,10 @@ impl Node {
                     .unwrap()
                     .as_micros() as u64;
                 if (now - reference_time) % slot_duration == 0 {
+                    let absolute_slot = (now - reference_time) / slot_duration;
+                    current_slot.store(absolute_slot, Ordering::Relaxed);
                     slot_ticker_sender
-                        .send(((now - reference_time) / slot_duration, now))
+                        .send((absolute_slot, now))
                         .expect("Failed to send tick");
                     // thread::sleep(Duration::from_micros(SLOT_DURATION * 4 / 5));
                 }
@@ -479,7 +533,7 @@ impl Node {
 
             let _ = self
                 .socket
-                .set_read_timeout(Some(Duration::from_micros(1000)));
+                .set_read_timeout(Some(Duration::from_micros(JOIN_REQ_TIMEOUT)));
             if let Some(mut packet_buffer) = self.pool.take() {
                 if let Ok((_, _src)) = self.socket.recv_from(&mut packet_buffer.as_mut_slice()) {
                     let packet_view = PacketView::new(packet_buffer);
