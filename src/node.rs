@@ -146,7 +146,6 @@ impl Node {
             while let Ok((slot_number, slot_start_time)) = slot_ticker.recv() {
                 let slot =
                     schedule.lock().unwrap().slots[slot_number as usize % slotframe_size as usize];
-
                 // println!("[Node {}] *Slot {}* {:?}", id, slot_number, slot_start_time);
 
                 let slot_start_time = UNIX_EPOCH + Duration::from_micros(slot_start_time);
@@ -169,6 +168,15 @@ impl Node {
                 //         .unwrap()
                 //         .as_micros()
                 // );
+
+                if current_slot.load(Ordering::Acquire) != slot_number {
+                    // println!(
+                    //     "force exit pre clear window, current: {}, slot: {}",
+                    //     current_slot.load(Ordering::Acquire),
+                    //     slot_number
+                    // );
+                    continue;
+                }
 
                 // if verbose {
                 // }
@@ -433,6 +441,7 @@ impl Node {
                     .as_micros() as u64;
                 if (now - reference_time) % slot_duration == 0 {
                     let absolute_slot = (now - reference_time) / slot_duration;
+                    // println!("slot_ticker: absolute_slot: {}", absolute_slot);
                     current_slot.store(absolute_slot, Ordering::Relaxed);
                     slot_ticker_sender
                         .send((absolute_slot, now))
